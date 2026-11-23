@@ -32,6 +32,56 @@ function createFakeUtilityProcess(
 }
 
 describe("resolvePtyHostLaunchOptions", () => {
+  it("keeps managed exit waits alive until a receipt and rejects remaining waits when their session or host ends", async () => {
+    vi.useFakeTimers();
+    const child = createFakeUtilityProcess();
+    const manager = new PtyHostManager(
+      vi.fn(() => child) as unknown as ForkPtyHostProcess
+    );
+    const session = {
+      sessionId: "managed",
+      surfaceId: "surface",
+      runtimeEpoch: "epoch"
+    };
+    try {
+      manager.start();
+      const exited = manager.waitForCommandExit({
+        operationId: "normal",
+        session
+      });
+      await vi.advanceTimersByTimeAsync(120_000);
+      const receipt = {
+        type: "orchestration.command.exit",
+        operationId: "normal",
+        session,
+        exitCode: 0,
+        output: "{}",
+        outputBytes: 2,
+        truncated: false
+      };
+      child.emit("message", receipt);
+      await expect(exited).resolves.toEqual(receipt);
+      const lostSession = expect(
+        manager.waitForCommandExit({ operationId: "lost-session", session })
+      ).rejects.toThrow(/session ended/);
+      child.emit("message", {
+        type: "exit",
+        payload: { sessionId: session.sessionId, exitCode: 1 }
+      });
+      await lostSession;
+      const lostHost = expect(
+        manager.waitForCommandExit({
+          operationId: "lost-host",
+          session: { ...session, sessionId: "another" }
+        })
+      ).rejects.toThrow(/session ended/);
+      child.emit("exit", 1);
+      await lostHost;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("uses the unpacked pty-host bundle when running from app.asar", () => {
     const launch = resolvePtyHostLaunchOptions(
       "/Applications/kmux.app/Contents/Resources/app.asar/out/main",
@@ -396,7 +446,7 @@ describe("resolvePtyHostLaunchOptions", () => {
     );
   });
 
-  it("queues text input until the session reports shell input ready", () => {
+  it("queues text and holds the exact-generation launch barrier until shell input is ready", async () => {
     const send = vi.fn((message: unknown) => Boolean(message));
     const fakeChild = createFakeUtilityProcess(send);
 
@@ -404,9 +454,28 @@ describe("resolvePtyHostLaunchOptions", () => {
     const manager = new PtyHostManager(forkProcess);
 
     manager.start();
+    manager.send({
+      type: "spawn",
+      spec: {
+        sessionId: "session_1",
+        surfaceId: "surface_1",
+        runtimeEpoch: "epoch_1"
+      }
+    } as never);
+    send.mockClear();
+    const resolved = vi.fn();
+    const ready = manager
+      .waitForInputReady({
+        sessionId: "session_1",
+        surfaceId: "surface_1",
+        epoch: "epoch_1"
+      })
+      .then(resolved);
     manager.sendText("session_1", "echo ready\r");
 
     expect(send).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(resolved).not.toHaveBeenCalled();
 
     fakeChild.emit("message", {
       type: "spawned",
@@ -422,6 +491,14 @@ describe("resolvePtyHostLaunchOptions", () => {
       sessionId: "session_1",
       surfaceId: "surface_1"
     });
+    await ready;
+    await expect(
+      manager.waitForInputReady({
+        sessionId: "session_1",
+        surfaceId: "surface_1",
+        epoch: "stale"
+      })
+    ).rejects.toThrow(/generation changed/u);
 
     expect(send).toHaveBeenCalledWith({
       type: "input:text",
@@ -832,6 +909,57 @@ describe("resolvePtyHostLaunchOptions", () => {
     ).toBeNull();
   });
 
+  it("preserves a generation when the PTY host observed direct input after settlement", async () => {
+    const postMessage = vi.fn();
+    const fakeChild = createFakeUtilityProcess(postMessage);
+    const forkProcess = vi.fn(() => fakeChild) as unknown as ForkPtyHostProcess;
+    const manager = new PtyHostManager(forkProcess);
+
+    manager.start();
+    manager.send({
+      type: "spawn",
+      spec: {
+        sessionId: "session_takeover",
+        surfaceId: "surface_takeover",
+        runtimeEpoch: "epoch_takeover"
+      }
+    } as never);
+    const session = manager.sessionRef("surface_takeover", "session_takeover");
+    if (!session) throw new Error("expected current local session generation");
+
+    postMessage.mockClear();
+    const closed = manager.closeSessionGeneration(
+      session,
+      10_000,
+      "2026-09-20T00:00:00.000Z"
+    );
+    const closeRequest = postMessage.mock.calls[0]?.[0];
+    expect(closeRequest).toMatchObject({
+      type: "close",
+      preserveIfDirectInputAfter: "2026-09-20T00:00:00.000Z"
+    });
+    if (
+      !closeRequest ||
+      typeof closeRequest !== "object" ||
+      !("requestId" in closeRequest)
+    ) {
+      throw new Error("expected generation-fenced close request");
+    }
+    fakeChild.emit("message", {
+      type: "close.ack",
+      requestId: closeRequest.requestId,
+      sessionId: "session_takeover",
+      surfaceId: "surface_takeover",
+      runtimeEpoch: "epoch_takeover",
+      outcome: "input-observed"
+    });
+
+    await expect(closed).resolves.toBe("input-observed");
+    expect(manager.sessionRef("surface_takeover", "session_takeover")).toEqual(
+      session
+    );
+  });
+
   it("rejects a generation-mismatched close acknowledgement without revoking the current capability", async () => {
     const postMessage = vi.fn();
     const fakeChild = createFakeUtilityProcess(postMessage);
@@ -914,9 +1042,9 @@ describe("resolvePtyHostLaunchOptions", () => {
     await expect(
       manager.closeSessionGeneration(deliverySession)
     ).rejects.toThrow("pty-host IPC send failed: utility channel closed");
-    expect(
-      manager.sessionRef("surface_delivery", "session_delivery")
-    ).toEqual(deliverySession);
+    expect(manager.sessionRef("surface_delivery", "session_delivery")).toEqual(
+      deliverySession
+    );
 
     firstChild.emit("exit", 1);
     manager.start();
@@ -1061,5 +1189,140 @@ describe("resolvePtyHostLaunchOptions", () => {
     fakeChild.emit("exit", 1);
 
     await expect(snapshotPromise).resolves.toBeNull();
+  });
+});
+
+describe("PtyHostManager orchestration control", () => {
+  it("removes timed-out controls before a session can flush them", async () => {
+    vi.useFakeTimers();
+    try {
+      const postMessage = vi.fn();
+      const fakeChild = createFakeUtilityProcess(postMessage);
+      const manager = new PtyHostManager(
+        vi.fn(() => fakeChild) as unknown as ForkPtyHostProcess
+      );
+      manager.start({ PATH: "/usr/local/bin" });
+
+      const delivery = manager.deliverOrchestratedInput({
+        session: {
+          sessionId: "session:late",
+          surfaceId: "surface:late",
+          runtimeEpoch: "epoch:late"
+        },
+        authorityRef: "input-authority:late",
+        readinessReceiptId: "ready:late",
+        readyEpoch: "turn:late",
+        operationId: "delivery:late",
+        payloadHash:
+          "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        text: "must never be sent\n",
+        verificationText: "must never be sent"
+      });
+      const rejected = expect(delivery).rejects.toThrow(/timed out/);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await rejected;
+
+      fakeChild.emit("message", {
+        type: "spawned",
+        sessionId: "session:late",
+        pid: 42,
+        shellInputReady: true
+      });
+      expect(postMessage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: "input:orchestrated" })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("binds readiness, delivery, and status acknowledgements to one exact generation", async () => {
+    const postMessage = vi.fn();
+    const fakeChild = createFakeUtilityProcess(postMessage);
+    const manager = new PtyHostManager(
+      vi.fn(() => fakeChild) as unknown as ForkPtyHostProcess
+    );
+    manager.start({ PATH: "/usr/local/bin" });
+    fakeChild.emit("message", { type: "ready" });
+    fakeChild.emit("message", {
+      type: "spawned",
+      sessionId: "session:1",
+      pid: 42,
+      shellInputReady: true
+    });
+    const session = {
+      sessionId: "session:1",
+      surfaceId: "surface:1",
+      runtimeEpoch: "epoch:1"
+    };
+
+    const readinessPromise = manager.registerAgentReadiness({
+      session,
+      authorityRef: "input-authority:1",
+      receiptId: "ready:1",
+      agentId: "codex",
+      agentInstanceId: "agent-instance:1",
+      readyEpoch: "turn:1"
+    });
+    const readinessRequest = postMessage.mock.calls.at(-1)?.[0] as {
+      requestId: string;
+    };
+    fakeChild.emit("message", {
+      type: "agent.readiness.ack",
+      requestId: readinessRequest.requestId,
+      session,
+      outcome: "registered",
+      receiptId: "ready:1"
+    });
+    await expect(readinessPromise).resolves.toMatchObject({
+      outcome: "registered"
+    });
+
+    const payloadHash =
+      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const deliveryPromise = manager.deliverOrchestratedInput({
+      session,
+      authorityRef: "input-authority:1",
+      readinessReceiptId: "ready:1",
+      readyEpoch: "turn:1",
+      operationId: "delivery:1",
+      payloadHash,
+      text: "task\n",
+      verificationText: "task"
+    });
+    const deliveryRequest = postMessage.mock.calls.at(-1)?.[0] as {
+      requestId: string;
+    };
+    fakeChild.emit("message", {
+      type: "input.delivery.ack",
+      requestId: deliveryRequest.requestId,
+      session,
+      operationId: "delivery:1",
+      payloadHash,
+      outcome: "written",
+      replay: false
+    });
+    await expect(deliveryPromise).resolves.toMatchObject({
+      outcome: "written",
+      replay: false
+    });
+
+    const queryPromise = manager.queryOrchestratedDelivery({
+      session,
+      operationId: "delivery:1",
+      payloadHash
+    });
+    const queryRequest = postMessage.mock.calls.at(-1)?.[0] as {
+      requestId: string;
+    };
+    fakeChild.emit("message", {
+      type: "input.delivery.status",
+      requestId: queryRequest.requestId,
+      session: { ...session, runtimeEpoch: "epoch:stale" },
+      operationId: "delivery:1",
+      payloadHash,
+      outcome: "written"
+    });
+    await expect(queryPromise).rejects.toThrow(/does not match/);
   });
 });

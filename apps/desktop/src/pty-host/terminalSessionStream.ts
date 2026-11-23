@@ -45,9 +45,9 @@ export interface TerminalSessionStreamOptions {
   deltaStore: TerminalDeltaStore<TerminalDelta>;
   createCheckpoint: () => Promise<TerminalCheckpoint>;
   getDimensions: () => { cols: number; rows: number };
-  writeText: (text: string) => void;
-  writeBinary: (data: string) => void;
-  writeKey: (input: TerminalKeyInput) => void;
+  writeText: (text: string) => boolean | void;
+  writeBinary: (data: string) => boolean | void;
+  writeKey: (input: TerminalKeyInput) => boolean | void;
   resize: (
     request: Extract<TerminalDataPlaneClientMessage, { type: "resize" }>
   ) => Promise<{ sequence: Uint64; cols: number; rows: number }>;
@@ -401,16 +401,19 @@ export class TerminalSessionStream {
         this.acceptCheckpointCredit(attachment, message);
         return;
       case "input:text":
-        this.options.writeText(message.text);
-        this.options.onInputObserved?.(message);
+        if (this.options.writeText(message.text) !== false) {
+          this.options.onInputObserved?.(message);
+        }
         return;
       case "input:binary":
-        this.options.writeBinary(message.data);
-        this.options.onInputObserved?.(message);
+        if (this.options.writeBinary(message.data) !== false) {
+          this.options.onInputObserved?.(message);
+        }
         return;
       case "input:key":
-        this.options.writeKey(message.input);
-        this.options.onInputObserved?.(message);
+        if (this.options.writeKey(message.input) !== false) {
+          this.options.onInputObserved?.(message);
+        }
         return;
       case "resize": {
         const result = await this.options.resize(message);

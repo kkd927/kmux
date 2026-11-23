@@ -5,7 +5,7 @@
     {
       "id": "claude",
       "aliases": [],
-      "definitionRevision": "claude-v2",
+      "definitionRevision": "claude-v5",
       "hook": {
         "relativePath": ".claude/settings.json",
         "document": { "eventsPath": ["hooks"] },
@@ -55,7 +55,7 @@
     {
       "id": "codex",
       "aliases": [],
-      "definitionRevision": "codex-v3",
+      "definitionRevision": "codex-v8",
       "hook": {
         "pathRoot": {
           "defaultHomeRelativePath": ".codex",
@@ -101,7 +101,7 @@
     {
       "id": "copilot",
       "aliases": [],
-      "definitionRevision": "copilot-v1",
+      "definitionRevision": "copilot-v6",
       "hook": {
         "pathRoot": {
           "defaultHomeRelativePath": ".copilot",
@@ -148,7 +148,7 @@
     {
       "id": "antigravity",
       "aliases": ["agy", "antigravity-cli"],
-      "definitionRevision": "antigravity-v2",
+      "definitionRevision": "antigravity-v8",
       "hook": {
         "relativePath": ".gemini/config/hooks.json",
         "document": { "eventsPath": ["kmux-antigravity"] },

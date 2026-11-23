@@ -12,6 +12,7 @@ export {
   decodeAgentDescriptorCatalogDto,
   decodeAgentDescriptorDto,
   decodeAgentId,
+  decodeAgentModelOptions,
   decodeMetadataSourceRoleId,
   isAgentId,
   normalizeAgentIdInput
@@ -20,7 +21,9 @@ export type {
   AgentCapabilityKey,
   AgentDescriptorDto,
   AgentId,
+  AgentModelOptionDto,
   AgentPresentationDto,
+  AgentSkillPlacementScope,
   MetadataSourceRoleId
 } from "./agents";
 import type { AgentId } from "./agents";
@@ -1080,6 +1083,10 @@ export type SurfaceDiagnosticCaptureMode = "default" | "enabled" | "disabled";
 export interface KmuxSettings {
   settingsVersion?: number;
   agents?: AgentsSettings;
+  orchestrationWorkerPolicy?: {
+    succeeded: "retain" | "release";
+    failed: "retain" | "release";
+  };
   socketMode: SocketMode;
   warnBeforeQuit: boolean;
   restoreWorkspacesAfterQuit: boolean;

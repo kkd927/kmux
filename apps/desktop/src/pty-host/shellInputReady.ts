@@ -12,7 +12,7 @@ export interface ShellInputReadyRecord {
   shellInputReady: boolean;
   pendingInitialInput?: string;
   shellReadyFallbackTimer: NodeJS.Timeout | null;
-  pty: {
+  pty?: {
     write(text: string): void;
   };
 }
@@ -36,7 +36,7 @@ export function markShellInputReady(
   const pendingInitialInput = record.pendingInitialInput;
   record.pendingInitialInput = undefined;
   if (pendingInitialInput) {
-    record.pty.write(pendingInitialInput);
+    record.pty?.write(pendingInitialInput);
   }
   onReady?.();
 

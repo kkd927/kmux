@@ -544,6 +544,7 @@ export function createDefaultSettings(
   return {
     settingsVersion: CURRENT_SETTINGS_VERSION,
     socketMode: mode,
+    orchestrationWorkerPolicy: { succeeded: "retain", failed: "retain" },
     warnBeforeQuit: true,
     restoreWorkspacesAfterQuit: true,
     notificationDesktop: true,
@@ -638,6 +639,22 @@ export function mergeSettings(
   return {
     settingsVersion: CURRENT_SETTINGS_VERSION,
     ...mergeAgentsSettings(current, nextPatch),
+    orchestrationWorkerPolicy: {
+      succeeded:
+        (
+          nextPatch.orchestrationWorkerPolicy ??
+          current.orchestrationWorkerPolicy
+        )?.succeeded === "release"
+          ? "release"
+          : "retain",
+      failed:
+        (
+          nextPatch.orchestrationWorkerPolicy ??
+          current.orchestrationWorkerPolicy
+        )?.failed === "release"
+          ? "release"
+          : "retain"
+    },
     socketMode: nextPatch.socketMode ?? current.socketMode,
     warnBeforeQuit:
       typeof nextPatch.warnBeforeQuit === "boolean"

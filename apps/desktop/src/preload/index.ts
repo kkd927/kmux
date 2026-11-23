@@ -1,3 +1,8 @@
+import type {
+  RendererOrchestrationMethod,
+  OrchestrationClientRequest,
+  OrchestrationResponse
+} from "@kmux/orchestration";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 import type { AppAction } from "@kmux/core";
@@ -24,6 +29,7 @@ import {
 } from "../shared/diagnostics";
 import type {
   AgentDescriptorDto,
+  AgentModelOptionDto,
   CreateImageAttachmentPayload,
   CreateImageAttachmentsResult,
   ExternalAgentSessionResumeRequest,
@@ -69,6 +75,7 @@ import type {
 } from "@kmux/proto";
 import {
   decodeAgentDescriptorCatalogDto,
+  decodeAgentModelOptions,
   decodeMarkdownDocumentEvent,
   type MarkdownDocumentEvent
 } from "@kmux/proto";
@@ -107,6 +114,11 @@ const api = {
     return ipcRenderer
       .invoke("kmux:agents:catalog")
       .then((value) => decodeAgentDescriptorCatalogDto(value));
+  },
+  getAgentModelOptions(agentId: string): Promise<AgentModelOptionDto[]> {
+    return ipcRenderer
+      .invoke("kmux:agents:models", agentId)
+      .then(decodeAgentModelOptions);
   },
   getPlatform(): Promise<RendererPlatformDescriptor> {
     return ipcRenderer.invoke("kmux:platform:get");
@@ -155,6 +167,17 @@ const api = {
   },
   getUpdaterState(): Promise<UpdaterState> {
     return ipcRenderer.invoke("kmux:updater:get");
+  },
+  orchestration<M extends RendererOrchestrationMethod>(
+    request: OrchestrationClientRequest<M>
+  ): Promise<OrchestrationResponse<M>> {
+    return ipcRenderer.invoke("kmux:orchestration", request);
+  },
+  orchestrationSkill(request: {
+    method: "orchestration.skill.status" | "orchestration.skill.install";
+    params: { agentIds: string[]; confirm?: true };
+  }): Promise<unknown> {
+    return ipcRenderer.invoke("kmux:orchestration-skill", request);
   },
   dispatch(action: AppAction): Promise<void> {
     return ipcRenderer.invoke("kmux:dispatch", action);

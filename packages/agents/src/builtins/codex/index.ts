@@ -15,11 +15,15 @@ import {
   usageWatchIsRecursive
 } from "../shared";
 import {
+  codexSessionTranscript,
   createCodexExternalSessionProjection,
   createCodexSessionSourceProjection
 } from "./externalSessions";
 import { classifyCodexMetadataPath } from "./inventory";
 import { createCodexUsageSourceProjection } from "./usage";
+import { createGlobalAgentSkillPlacement } from "../../skillPlacement";
+import { listCodexModels } from "./models";
+import { classifyCodexTerminalReadiness } from "./terminalReadiness";
 
 export const codexAgent = Object.freeze({
   descriptor: {
@@ -28,8 +32,32 @@ export const codexAgent = Object.freeze({
     aliases: [],
     presentation: { shortLabel: "CODEX" }
   },
-  definitionRevision: "codex-v3",
+  definitionRevision: "codex-v8",
   command: { executable: "codex" },
+  terminalReadiness: { classify: classifyCodexTerminalReadiness },
+  launchPreferences: {
+    supportedEfforts: [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ],
+    listModels: listCodexModels,
+    buildArgs: (preferences) => [
+      ...(preferences.model ? ["--model", preferences.model] : []),
+      ...(preferences.effort
+        ? ["--config", `model_reasoning_effort=${preferences.effort}`]
+        : [])
+    ]
+  },
+  skillPlacement: createGlobalAgentSkillPlacement({
+    defaultHomeRelativePath: ".codex",
+    environmentVariable: "CODEX_HOME"
+  }),
   commandWrapper: {
     homeEnvironmentVariable: "CODEX_HOME",
     defaultHomeRelativePath: ".codex",
@@ -150,6 +178,7 @@ export const codexAgent = Object.freeze({
     ]
   },
   sessions: {
+    transcript: codexSessionTranscript,
     createMetadataProjection: createCodexExternalSessionProjection,
     createSourceProjection: createCodexSessionSourceProjection
   },

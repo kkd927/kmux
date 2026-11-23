@@ -15,12 +15,17 @@ import {
   usageWatchIsRecursive
 } from "../shared";
 import {
+  copilotSessionTranscript,
   createCopilotExternalSessionProjection,
   createCopilotSessionSourceProjection
 } from "./externalSessions";
 import { classifyCopilotMetadataPath } from "./inventory";
 import { buildCopilotResumeArgs } from "./resume";
 import { createCopilotUsageSourceProjection } from "./usage";
+import { createGlobalAgentSkillPlacement } from "../../skillPlacement";
+import { prepareCopilotWorkspaceTrust } from "./workspaceTrust";
+import { listCopilotModels } from "./models";
+import { classifyCopilotTerminalReadiness } from "./terminalReadiness";
 import type {
   CopilotSubscriptionRuntime,
   CopilotSubscriptionUsageOptions
@@ -56,8 +61,30 @@ export const copilotAgent = Object.freeze({
     aliases: [],
     presentation: { shortLabel: "COPILOT" }
   },
-  definitionRevision: "copilot-v1",
+  definitionRevision: "copilot-v6",
   command: { executable: "copilot" },
+  terminalReadiness: { classify: classifyCopilotTerminalReadiness },
+  orchestrationLaunch: { defaultArgs: ["--yolo"] },
+  launchPreferences: {
+    listModels: listCopilotModels,
+    supportedEfforts: [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    buildArgs: (preferences) => [
+      ...(preferences.model ? ["--model", preferences.model] : []),
+      ...(preferences.effort ? ["--reasoning-effort", preferences.effort] : [])
+    ]
+  },
+  skillPlacement: createGlobalAgentSkillPlacement(COPILOT_PATH_ROOT),
+  workspaceTrust: {
+    prepare: prepareCopilotWorkspaceTrust
+  },
   resume: { build: buildCopilotResumeArgs },
   hooks: {
     portable: {
@@ -156,6 +183,7 @@ export const copilotAgent = Object.freeze({
     ]
   },
   sessions: {
+    transcript: copilotSessionTranscript,
     createMetadataProjection: createCopilotExternalSessionProjection,
     createSourceProjection: createCopilotSessionSourceProjection
   },

@@ -1543,7 +1543,6 @@ function buildVersionGatedAgentWrapperScript(
     "}",
     "kmux_log_agent_wrapper",
     "",
-    "KMUX_EXIT_CODE=0",
     'if [ "$KMUX_USE_AGENT_HOOKS" = "1" ]; then',
     '  KMUX_AGENT_HOOKS_FEATURE="$(kmux_resolve_agent_hooks_feature)"',
     '  set -- --enable "$KMUX_AGENT_HOOKS_FEATURE" "$@"',
@@ -1551,8 +1550,7 @@ function buildVersionGatedAgentWrapperScript(
     'if ! kmux_has_notification_method_override "$@"; then',
     `  set -- --config tui.notification_method=${wrapperPolicy.notificationMethod} "$@"`,
     "fi",
-    '  "$KMUX_REAL_AGENT" "$@" || KMUX_EXIT_CODE=$?',
-    'exit "$KMUX_EXIT_CODE"',
+    'exec "$KMUX_REAL_AGENT" "$@"',
     ""
   ].join("\n");
 }

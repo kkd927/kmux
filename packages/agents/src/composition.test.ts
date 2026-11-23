@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { join } from "node:path";
 
-import { resolveBuiltinDetectedProcessAgent } from "./builtinRuntime";
+import {
+  listBuiltinAgentDescriptors,
+  resolveBuiltinAgentLaunchPolicy,
+  resolveBuiltinAgentResumePolicy,
+  resolveBuiltinAgentSkillPlacement,
+  resolveBuiltinDetectedProcessAgent
+} from "./builtinRuntime";
 import { createInternalAgentModuleRegistry } from "./composition";
 import { normalizeAgentScopeSettings } from "./settings";
-import { resolveAgentResumePolicy } from "./command";
+import { resolveAgentLaunchPolicy, resolveAgentResumePolicy } from "./command";
 import type { AgentModule, AgentSessionsCapability } from "./contracts";
 
 const fixture = (id: string, aliases: string[] = []): AgentModule => ({
@@ -36,6 +43,37 @@ describe("agent composition contracts", () => {
     expect(settings.get("known")).toEqual({
       command: "known-wrapper"
     });
+  });
+
+  it("projects skill placement support while keeping path resolution agent-owned", () => {
+    const descriptors = listBuiltinAgentDescriptors();
+    for (const agentId of ["codex", "claude", "copilot", "antigravity"]) {
+      expect(descriptors.find((agent) => agent.id === agentId)).toMatchObject({
+        capabilities: expect.arrayContaining(["skillPlacement"]),
+        skillPlacement: { scopes: ["global"] }
+      });
+    }
+    expect(
+      resolveBuiltinAgentSkillPlacement("codex")?.resolveRoot({
+        scope: "global",
+        homeDir: "/Users/test",
+        env: { CODEX_HOME: "/Users/test/custom-codex" }
+      })
+    ).toBe(join("/Users/test/custom-codex", "skills"));
+    expect(
+      resolveBuiltinAgentSkillPlacement("copilot")?.resolveRoot({
+        scope: "global",
+        homeDir: "/Users/test",
+        env: { COPILOT_HOME: "/Users/test/custom-copilot" }
+      })
+    ).toBe(join("/Users/test/custom-copilot", "skills"));
+    expect(
+      resolveBuiltinAgentSkillPlacement("antigravity")?.resolveRoot({
+        scope: "global",
+        homeDir: "/Users/test"
+      })
+    ).toBe(join("/Users/test", ".gemini", "config", "skills"));
+    expect(resolveBuiltinAgentSkillPlacement("future-agent")).toBeUndefined();
   });
 
   it("rejects identity collisions and metadata references without declarations", () => {
@@ -172,6 +210,111 @@ describe("agent composition contracts", () => {
       command: "/opt/agent wrapper",
       args: ["--profile", "shared", "--resume", "session id"]
     });
+  });
+
+  it("translates structured launch preferences through the trusted Agent capability", () => {
+    const command = { executable: "codex" };
+    const capability = {
+      supportedEfforts: ["low", "high"],
+      buildArgs: (preferences: { model?: string; effort?: string }) => [
+        "--model",
+        preferences.model!,
+        "--config",
+        `model_reasoning_effort=${preferences.effort}`
+      ]
+    };
+    expect(
+      resolveAgentLaunchPolicy({
+        agentId: "codex",
+        command,
+        settings: { args: ["--profile", "shared"] },
+        preferences: { model: "gpt-5.5", effort: "high" },
+        preferencesCapability: capability
+      })
+    ).toMatchObject({
+      args: [
+        "--profile",
+        "shared",
+        "--model",
+        "gpt-5.5",
+        "--config",
+        "model_reasoning_effort=high"
+      ],
+      preferenceArgs: [
+        "--model",
+        "gpt-5.5",
+        "--config",
+        "model_reasoning_effort=high"
+      ],
+      launchPreferences: {
+        requested: { model: "gpt-5.5", effort: "high" },
+        effective: { model: "gpt-5.5", effort: "high" },
+        evidence: "executor-applied"
+      }
+    });
+    expect(() =>
+      resolveAgentLaunchPolicy({
+        agentId: "codex",
+        command,
+        preferences: { effort: "high" },
+        preferencesCapability: capability
+      })
+    ).toThrow(/requires a model/u);
+    expect(() =>
+      resolveAgentLaunchPolicy({
+        agentId: "codex",
+        command,
+        preferences: { model: "--danger", effort: "high" },
+        preferencesCapability: capability
+      })
+    ).toThrow(/opaque provider identifier/u);
+  });
+
+  it("encodes Antigravity tiers while keeping model and effort stable for session reuse", () => {
+    expect(
+      resolveBuiltinAgentLaunchPolicy({
+        agentId: "antigravity",
+        preferences: { model: "gemini-3.8-flash", effort: "low" }
+      })
+    ).toMatchObject({
+      args: [
+        "--dangerously-skip-permissions",
+        "--model",
+        "gemini-3.8-flash-low"
+      ],
+      launchPreferences: {
+        requested: { model: "gemini-3.8-flash", effort: "low" },
+        effective: { model: "gemini-3.8-flash", effort: "low" },
+        evidence: "executor-applied"
+      }
+    });
+    expect(() =>
+      resolveBuiltinAgentLaunchPolicy({
+        agentId: "antigravity",
+        preferences: { model: "gemini-3.8-flash", effort: "unsupported" }
+      })
+    ).toThrow(/does not support effort/u);
+  });
+
+  it("uses Agent-owned permission defaults unless the user configured args", () => {
+    expect(
+      resolveBuiltinAgentLaunchPolicy({ agentId: "copilot" })?.args
+    ).toEqual(["--yolo"]);
+    expect(
+      resolveBuiltinAgentLaunchPolicy({ agentId: "antigravity" })?.args
+    ).toEqual(["--dangerously-skip-permissions"]);
+    expect(
+      resolveBuiltinAgentLaunchPolicy({
+        agentId: "copilot",
+        settings: { args: [] }
+      })?.args
+    ).toEqual([]);
+    expect(
+      resolveBuiltinAgentResumePolicy({
+        agentId: "copilot",
+        sessionId: "existing-session"
+      })?.args
+    ).not.toContain("--yolo");
   });
 
   it("uses the production process matchers for legacy, quoted, and package commands", () => {

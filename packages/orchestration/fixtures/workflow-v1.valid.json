@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "definitionId": "secure-change",
+  "version": 1,
+  "name": "Secure change",
+  "description": "Implement and deterministically route a structured review result.",
+  "inputs": [
+    {
+      "id": "task",
+      "required": true,
+      "schema": { "schema": { "type": "string", "minLength": 1 } }
+    }
+  ],
+  "outputs": [
+    {
+      "id": "implementation",
+      "required": true,
+      "source": { "kind": "node-result", "nodeId": "implement" }
+    }
+  ],
+  "agentBindings": {
+    "author": {
+      "agent": { "kind": "agent-id", "agentId": "codex" },
+      "scope": { "kind": "run" },
+      "authorityMode": "ambient",
+      "capabilities": ["terminal", "filesystem-write"],
+      "targetPolicy": "local",
+      "surfacePolicy": "create-or-reuse",
+      "sessionPolicy": "reuse",
+      "worktreePolicy": "dedicated-top-level",
+      "inputMode": "orchestrated"
+    }
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "Input",
+      "config": { "version": 1 }
+    },
+    {
+      "id": "implement",
+      "kind": "agent",
+      "title": "Implement",
+      "config": {
+        "version": 1,
+        "agentRef": "author",
+        "prompt": "Implement {{task}} and submit the required structured result.",
+        "lifecycleMode": "managed",
+        "coding": true
+      },
+      "inputMappings": [
+        {
+          "target": "task",
+          "source": { "kind": "run-input", "inputId": "task" },
+          "required": true,
+          "missing": "fail"
+        }
+      ],
+      "resultSchema": {
+        "schema": {
+          "type": "object",
+          "required": ["acceptedImportantCount"],
+          "properties": {
+            "acceptedImportantCount": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "retryPolicy": {
+        "maxAttempts": 2,
+        "retryable": ["executor-error", "invalid-result"],
+        "backoffMs": 1000,
+        "placement": "same"
+      },
+      "onFailure": "fail-run",
+      "onCancel": "fail-run"
+    },
+    {
+      "id": "judge",
+      "kind": "condition",
+      "title": "Important findings?",
+      "config": {
+        "version": 1,
+        "expressionVersion": 1,
+        "expression": "nodes.implement.result.data.acceptedImportantCount > 0",
+        "ports": ["important", "clean"]
+      },
+      "inputMappings": [
+        {
+          "target": "acceptedImportantCount",
+          "source": {
+            "kind": "node-result",
+            "nodeId": "implement",
+            "path": ["acceptedImportantCount"]
+          },
+          "required": true,
+          "missing": "fail"
+        }
+      ]
+    },
+    {
+      "id": "needs-fix",
+      "kind": "end",
+      "title": "Needs fix",
+      "config": { "version": 1 },
+      "completionRoot": true
+    },
+    {
+      "id": "done",
+      "kind": "end",
+      "title": "Done",
+      "config": { "version": 1 },
+      "completionRoot": true
+    }
+  ],
+  "edges": [
+    {
+      "id": "start-implement",
+      "from": { "nodeId": "start" },
+      "to": { "nodeId": "implement" }
+    },
+    {
+      "id": "implement-judge",
+      "from": { "nodeId": "implement", "port": "success" },
+      "to": { "nodeId": "judge" }
+    },
+    {
+      "id": "judge-fix",
+      "from": { "nodeId": "judge", "port": "important" },
+      "to": { "nodeId": "needs-fix" }
+    },
+    {
+      "id": "judge-done",
+      "from": { "nodeId": "judge", "port": "clean" },
+      "to": { "nodeId": "done" }
+    }
+  ],
+  "policies": {
+    "limits": {
+      "maxNodes": 64,
+      "maxEdges": 128,
+      "maxGraphDepth": 16,
+      "maxFanOut": 8,
+      "maxLoopIterations": 8,
+      "maxActiveAttempts": 4,
+      "maxAttemptsPerSession": 1,
+      "maxDispatches": 32,
+      "maxCoordinatorTurns": 16,
+      "maxGraphPatches": 32,
+      "maxWallClockMs": 86400000,
+      "maxActiveExecutionMs": 43200000,
+      "maxArtifactBytes": 104857600,
+      "maxStructuredResultBytes": 1048576
+    },
+    "failure": "fail-run",
+    "cancellation": "cancel-active"
+  }
+}

@@ -45,6 +45,7 @@ import {
 } from "../terminalTypography";
 import type { SshAskpassPromptKind } from "../sshAskpassPrompt";
 import { NotificationsPanel } from "./NotificationsPanel";
+import { OrchestrationSettings } from "./OrchestrationSettings";
 import { SshConnectionsSettings } from "./SshConnectionsSettings";
 import { WorkspaceContextMenu } from "./WorkspaceContextMenu";
 
@@ -60,8 +61,13 @@ interface AppOverlaysProps {
     id: string;
     label: string;
     subtitle: string;
-    run: () => void;
+    run: () => void | Promise<void>;
   }>;
+  paletteBusy: boolean;
+  paletteStatus: {
+    kind: "loading" | "error";
+    message: string;
+  } | null;
   onClosePalette: () => void;
   onChangePaletteQuery: (value: string) => void;
   onSelectPaletteIndex: (index: number) => void;
@@ -155,6 +161,7 @@ interface AppOverlaysProps {
     | "general"
     | "ssh"
     | "terminal"
+    | "orchestration"
     | "notifications"
     | "shortcuts";
   settingsDraft: KmuxSettings | undefined;
@@ -186,6 +193,7 @@ type SettingsCategoryId =
   | "general"
   | "ssh"
   | "terminal"
+  | "orchestration"
   | "notifications"
   | "shortcuts";
 
@@ -203,6 +211,11 @@ const SETTINGS_CATEGORIES: Array<{
     id: "terminal",
     label: "Terminal",
     description: "Theme, font, renderer"
+  },
+  {
+    id: "orchestration",
+    label: "Orchestration",
+    description: "Workers & skills"
   },
   {
     id: "notifications",
@@ -548,6 +561,7 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
             <input
               autoFocus
               value={props.paletteQuery}
+              disabled={props.paletteBusy}
               onChange={(event) =>
                 props.onChangePaletteQuery(event.currentTarget.value)
               }
@@ -590,6 +604,14 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
               aria-label="Command palette query"
               placeholder="Search everywhere"
             />
+            {props.paletteStatus ? (
+              <div
+                className={styles.paletteStatus}
+                role={props.paletteStatus.kind === "error" ? "alert" : "status"}
+              >
+                {props.paletteStatus.message}
+              </div>
+            ) : null}
             <div
               className={styles.paletteList}
               role="listbox"
@@ -602,6 +624,7 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                   data-selected={index === props.paletteSelectedIndex}
                   role="option"
                   aria-selected={index === props.paletteSelectedIndex}
+                  disabled={props.paletteBusy}
                   onMouseEnter={() => props.onSelectPaletteIndex(index)}
                   onFocus={() => props.onSelectPaletteIndex(index)}
                   onClick={() => props.onExecutePaletteItem(index)}
@@ -1433,6 +1456,16 @@ export function AppOverlays(props: AppOverlaysProps): JSX.Element {
                 ) : null}
                 {activeSettingsCategory === "ssh" ? (
                   <SshConnectionsSettings />
+                ) : null}
+                {activeSettingsCategory === "orchestration" ? (
+                  <OrchestrationSettings
+                    workerPolicy={props.settingsDraft.orchestrationWorkerPolicy}
+                    onWorkerPolicyChange={(orchestrationWorkerPolicy) =>
+                      updateSettingsDraft(props.setSettingsDraft, {
+                        orchestrationWorkerPolicy
+                      })
+                    }
+                  />
                 ) : null}
                 {activeSettingsCategory === "terminal" ? (
                   <div className={styles.settingsCategory}>

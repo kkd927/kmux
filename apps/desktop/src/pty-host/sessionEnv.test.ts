@@ -101,6 +101,7 @@ describe("buildSessionEnv", () => {
         agentPath: {
           helperBinDir: "/home/test/.local/share/kmux/hooks",
           wrapperBinDir: "/home/test/.local/share/kmux/wrappers",
+          cliBinDir: "/home/test/.local/share/kmux/commands",
           prependWrapperToPath: true
         }
       }
@@ -113,7 +114,7 @@ describe("buildSessionEnv", () => {
     expect(env.KMUX_PANE_ID).toBeUndefined();
     expect(env.KMUX_WORKSPACE_ID).toBe("workspace_1");
     expect(env.PATH).toBe(
-      "/home/test/.local/share/kmux/wrappers:/opt/bin:/usr/bin"
+      "/home/test/.local/share/kmux/wrappers:/home/test/.local/share/kmux/commands:/opt/bin:/usr/bin"
     );
   });
 

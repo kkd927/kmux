@@ -28,6 +28,9 @@ import {
   prepareAntigravityUsageProjection
 } from "./usage";
 import { queryAntigravityConversationSteps } from "./storage";
+import { createGlobalAgentSkillPlacement } from "../../skillPlacement";
+import { listAntigravityModels, resolveAntigravityPreferences } from "./models";
+import { classifyAntigravityTerminalReadiness } from "./terminalReadiness";
 
 const ALLOW = Object.freeze({ decision: "allow" });
 
@@ -38,8 +41,28 @@ export const antigravityAgent = Object.freeze({
     aliases: ["agy", "antigravity-cli"],
     presentation: { shortLabel: "AGY" }
   },
-  definitionRevision: "antigravity-v2",
+  definitionRevision: "antigravity-v8",
   command: { executable: "agy" },
+  terminalReadiness: { classify: classifyAntigravityTerminalReadiness },
+  orchestrationLaunch: {
+    defaultArgs: ["--dangerously-skip-permissions"]
+  },
+  launchPreferences: {
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    listModels: listAntigravityModels,
+    buildArgs(preferences) {
+      // The receipt keeps the common model/effort representation for session
+      // reuse; only the CLI arguments use AGY's tiered model IDs.
+      const encoded = resolveAntigravityPreferences(preferences);
+      return [
+        ...(encoded.model ? ["--model", encoded.model] : []),
+        ...(encoded.effort ? ["--effort", encoded.effort] : [])
+      ];
+    }
+  },
+  skillPlacement: createGlobalAgentSkillPlacement({
+    defaultHomeRelativePath: ".gemini/config"
+  }),
   resume: {
     build: (commonArgs, sessionId) => [
       ...commonArgs,
@@ -84,8 +107,9 @@ export const antigravityAgent = Object.freeze({
         .replace(/_/gu, "-")
         .toLowerCase();
       const toolName = antigravityToolName(payload);
+      const invocationNum = payload.invocationNum;
       const event =
-        normalized === "pre-invocation"
+        normalized === "pre-invocation" && invocationNum === 0
           ? "session_start"
           : normalized === "pre-tool-use" &&
               (toolName === "ask_permission" || toolName === "ask_question")

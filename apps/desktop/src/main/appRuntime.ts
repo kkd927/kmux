@@ -55,6 +55,7 @@ import type { ExternalSessionResumeSpec } from "@kmux/agents";
 
 import type { AppStore } from "./store";
 import type { PtyHostManager } from "./ptyHost";
+import type { TerminalHistoryStore } from "./terminalHistory";
 import { logDiagnostics } from "../shared/diagnostics";
 import { TerminalTypographyController } from "./terminalTypography";
 import { profileNowMs } from "../shared/nodeSmoothnessProfile";
@@ -72,6 +73,7 @@ export interface AppRuntimeOptions {
   };
   createShellLaunchPolicy: (launch: SessionLaunchConfig) => ShellLaunchPolicy;
   snapshotStore: SnapshotFileStore;
+  terminalHistory?: TerminalHistoryStore;
   windowStateStore: WindowStateFileStore;
   settingsStore: SettingsFileStore;
   defaultShellPath: string;
@@ -123,6 +125,7 @@ export interface AppRuntime {
   getExternalAgentSessions(): Promise<ExternalAgentSessionsSnapshot>;
   respawnRestoredSessions(): void;
   flushPersistence(): Promise<void>;
+  checkpointTerminalHistory(): Promise<void>;
   shutdown(options?: { preserveWorkspaceLayout?: boolean }): void;
   shutdownAsync(options?: { preserveWorkspaceLayout?: boolean }): Promise<void>;
 }
@@ -474,7 +477,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     }
   }
 
-  function runEffects(effects: AppEffect[]): void {
+  function runEffects(effects: AppEffect[], restoreOutput = false): void {
     if (effects.length === 0) {
       return;
     }
@@ -496,6 +499,20 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
             args: effect.launch.args ? [...effect.launch.args] : undefined,
             env: effect.launch.env ? { ...effect.launch.env } : undefined
           };
+          let history;
+          if (restoreOutput) {
+            try {
+              history = options.terminalHistory?.load({
+                surfaceId: effect.surfaceId,
+                sessionId: effect.sessionId
+              });
+            } catch (error) {
+              logDiagnostics("main.terminal-history.restore-failed", {
+                surfaceId: effect.surfaceId,
+                message: error instanceof Error ? error.message : String(error)
+              });
+            }
+          }
           ptyHost?.send({
             type: "spawn",
             spec: {
@@ -506,7 +523,23 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
               launch,
               cols: effect.initialSize.cols,
               rows: effect.initialSize.rows,
-              env: effect.sessionEnv
+              env: effect.sessionEnv,
+              ...(restoreOutput && launch.env?.KMUX_ORCHESTRATION_COMMAND_ID
+                ? {
+                    historyOnly: {
+                      exitCode: getState().sessions[effect.sessionId]?.exitCode
+                    }
+                  }
+                : {}),
+              ...(history
+                ? {
+                    restoredOutput: {
+                      vt: history.vt,
+                      cols: history.cols,
+                      rows: history.rows
+                    }
+                  }
+                : {})
             },
             shellLaunchPolicy: options.createShellLaunchPolicy(launch)
           });
@@ -959,27 +992,30 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
         if (!surface || !pane || !workspaceId) {
           continue;
         }
-        runEffects([
-          {
-            type: "session.spawn",
-            sessionId: session.id,
-            surfaceId: session.surfaceId,
-            workspaceId,
-            launch: session.launch,
-            initialSize: {
-              cols: 120,
-              rows: 30
-            },
-            sessionEnv: {
-              KMUX_SOCKET_MODE: state.settings.socketMode,
-              KMUX_WORKSPACE_ID: workspaceId,
-              KMUX_SURFACE_ID: session.surfaceId,
-              KMUX_SESSION_ID: session.id,
-              KMUX_AUTH_TOKEN: session.authToken,
-              TERM_PROGRAM: "kmux"
+        runEffects(
+          [
+            {
+              type: "session.spawn",
+              sessionId: session.id,
+              surfaceId: session.surfaceId,
+              workspaceId,
+              launch: session.launch,
+              initialSize: {
+                cols: 120,
+                rows: 30
+              },
+              sessionEnv: {
+                KMUX_SOCKET_MODE: state.settings.socketMode,
+                KMUX_WORKSPACE_ID: workspaceId,
+                KMUX_SURFACE_ID: session.surfaceId,
+                KMUX_SESSION_ID: session.id,
+                KMUX_AUTH_TOKEN: session.authToken,
+                TERM_PROGRAM: "kmux"
+              }
             }
-          }
-        ]);
+          ],
+          true
+        );
       }
     }
     if (restoredStateChanged) {
@@ -987,6 +1023,47 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
         cleanShutdown: false
       });
     }
+  }
+
+  async function checkpointTerminalHistory(): Promise<void> {
+    const history = options.terminalHistory;
+    if (!history) return;
+    const state = getState();
+    const sessions = state.settings.restoreWorkspacesAfterQuit
+      ? Object.values(state.sessions).filter((session) =>
+          ptyHost?.sessionRef(session.surfaceId, session.id)
+        )
+      : [];
+    const identities = sessions.map((session) => ({
+      surfaceId: session.surfaceId,
+      sessionId: session.id
+    }));
+    try {
+      history.retain(identities);
+    } catch (error) {
+      logDiagnostics("main.terminal-history.retention-failed", {
+        message: String(error)
+      });
+    }
+    await Promise.all(
+      sessions.map(async (session) => {
+        try {
+          const snapshot = await ptyHost!.snapshot(
+            session.id,
+            session.surfaceId
+          );
+          if (!snapshot)
+            throw new Error("Terminal did not supply a shutdown checkpoint");
+          const { surfaceId, sessionId, cols, rows, vt } = snapshot;
+          history.save({ surfaceId, sessionId, cols, rows, vt });
+        } catch (error) {
+          logDiagnostics("main.terminal-history.capture-failed", {
+            surfaceId: session.surfaceId,
+            message: error instanceof Error ? error.message : String(error)
+          });
+        }
+      })
+    );
   }
 
   function shutdown(
@@ -1113,6 +1190,7 @@ export function createAppRuntime(options: AppRuntimeOptions): AppRuntime {
     getExternalAgentSessions,
     respawnRestoredSessions,
     flushPersistence,
+    checkpointTerminalHistory,
     shutdown,
     shutdownAsync
   };
@@ -1247,7 +1325,8 @@ function resetRestoredSessions(state: AppState): void {
     };
     session.shellInputReady = false;
     delete session.pid;
-    delete session.exitCode;
+    if (!session.launch.env?.KMUX_ORCHESTRATION_COMMAND_ID)
+      delete session.exitCode;
   }
 }
 

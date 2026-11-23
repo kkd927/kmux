@@ -1,0 +1,11 @@
+{
+  "task": "대량 조회 경로를 조사·설계한 뒤 성능 개선을 적용한다.",
+  "validationCommand": "npm test",
+  "researchAgent": "codex",
+  "designAgent": "codex",
+  "implementationAgent": "codex",
+  "verificationAgent": "codex",
+  "acceptanceCriteria": "요구한 동작과 기존 호환성을 확인하고 프로젝트 검증을 통과한다.",
+  "constraints": "기존 사용자 변경을 보존하고 요청 범위에만 작업한다.",
+  "reportDirectory": ""
+}

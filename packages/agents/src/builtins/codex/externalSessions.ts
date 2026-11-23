@@ -16,6 +16,7 @@ import type {
   AgentExternalSessionMetadataProjection,
   AgentExternalSessionProjectionInput,
   AgentExternalSessionRecordProjection,
+  AgentSessionTranscriptCapability,
   AgentSessionSourceProjection,
   AgentSessionSourceProjectionInput
 } from "../../contracts";
@@ -27,6 +28,28 @@ import {
 } from "../externalSessionShared";
 import { classifyCodexMetadataPath } from "./inventory";
 import { isCodexSubagentSessionMetadata } from "./sessionMetadata";
+
+export const codexSessionTranscript: AgentSessionTranscriptCapability = {
+  matchesPath({ path, sessionId }) {
+    return (
+      classifyCodexMetadataPath(path) === "codex-session" &&
+      (basename(path).endsWith(`-${sessionId}.jsonl`) ||
+        basename(path) === `${sessionId}.jsonl`)
+    );
+  },
+  decodeRecord(record) {
+    const event = asCoreHistoryObject(record);
+    const payload = asCoreHistoryObject(event?.payload);
+    if (
+      event?.type !== "response_item" ||
+      payload?.type !== "message" ||
+      (payload.role !== "user" && payload.role !== "assistant")
+    )
+      return undefined;
+    const text = extractCodexPromptText(payload.content);
+    return text ? { role: payload.role, text } : undefined;
+  }
+};
 
 export function createCodexExternalSessionProjection(): AgentExternalSessionMetadataProjection {
   const cache = createExternalSessionProjectionCache();

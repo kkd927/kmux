@@ -34,6 +34,7 @@ export interface ShellLaunchPolicy {
   agentPath: {
     helperBinDir: string;
     wrapperBinDir: string;
+    cliBinDir?: string;
     prependWrapperToPath: boolean;
   };
   hookEnv: ShellLaunchHookEnv;
@@ -61,6 +62,15 @@ export interface PtySessionSpec {
   cols: number;
   rows: number;
   env: Record<string, string>;
+  historyOnly?: { exitCode?: number };
+  /** Prior display contents only; never sent to the new PTY child. */
+  restoredOutput?: { vt: string; cols: number; rows: number };
+}
+
+export interface PtyGenerationRef {
+  sessionId: Id;
+  surfaceId: Id;
+  runtimeEpoch: Id;
 }
 
 export type PtyRequest =
@@ -78,10 +88,41 @@ export type PtyRequest =
       sessionId: Id;
       surfaceId?: Id;
       expectedRuntimeEpoch?: Id;
+      preserveIfDirectInputAfter?: string;
       requestId?: Id;
     }
   | { type: "input:text"; sessionId: Id; text: string }
   | { type: "input:key"; sessionId: Id; input: TerminalKeyInput }
+  | {
+      type: "agent.readiness.register";
+      requestId: Id;
+      session: PtyGenerationRef;
+      authorityRef: Id;
+      receiptId: Id;
+      agentId: Id;
+      agentInstanceId: Id;
+      readyEpoch: Id;
+    }
+  | {
+      type: "input:orchestrated";
+      requestId: Id;
+      session: PtyGenerationRef;
+      authorityRef: Id;
+      readinessReceiptId: Id;
+      readyEpoch: Id;
+      operationId: Id;
+      payloadHash: string;
+      text: string;
+      verificationText: string;
+      encoding?: "orchestration-result-json";
+    }
+  | {
+      type: "input:delivery.query";
+      requestId: Id;
+      session: PtyGenerationRef;
+      operationId: Id;
+      payloadHash: string;
+    }
   | {
       type: "snapshot";
       sessionId: Id;
@@ -93,6 +134,7 @@ export type PtyRequest =
 
 export type PtyEvent =
   | { type: "ready" }
+  | { type: "history.ready"; sessionId: Id }
   | { type: "shutdown:ack"; requestId: Id }
   | { type: "diagnostics.batch"; records: DiagnosticsRecord[] }
   | {
@@ -125,14 +167,61 @@ export type PtyEvent =
         | { type: "binary"; data: string }
         | { type: "key"; input: TerminalKeyInput };
     }
+  | {
+      type: "agent.readiness.ack";
+      requestId: Id;
+      session: PtyGenerationRef;
+      outcome: "registered" | "fenced" | "generation-mismatch";
+      receiptId: Id;
+    }
+  | {
+      type: "input.delivery.ack";
+      requestId: Id;
+      session: PtyGenerationRef;
+      operationId: Id;
+      payloadHash: string;
+      outcome:
+        | "written"
+        | "conflict"
+        | "fenced"
+        | "generation-mismatch"
+        | "unknown";
+      replay: boolean;
+    }
+  | {
+      type: "input.delivery.status";
+      requestId: Id;
+      session: PtyGenerationRef;
+      operationId: Id;
+      payloadHash: string;
+      outcome:
+        | "not-seen"
+        | "written"
+        | "conflict"
+        | "unknown"
+        | "generation-mismatch";
+    }
   | { type: "runtime.lost"; sessions: TerminalSessionRef[] }
+  | {
+      type: "orchestration.command.exit";
+      operationId: Id;
+      session: PtyGenerationRef;
+      exitCode: number;
+      output: string;
+      outputBytes: number;
+      truncated: boolean;
+    }
   | {
       type: "close.ack";
       requestId: Id;
       sessionId: Id;
       surfaceId?: Id;
       runtimeEpoch?: Id;
-      outcome: "terminated" | "already-exited" | "generation-mismatch";
+      outcome:
+        | "terminated"
+        | "already-exited"
+        | "generation-mismatch"
+        | "input-observed";
     }
   | { type: "metadata"; payload: SurfaceMetadataPayload }
   | { type: "bell"; surfaceId: Id; sessionId: Id; title: string; cwd?: string }

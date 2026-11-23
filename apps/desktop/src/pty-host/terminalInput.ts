@@ -4,23 +4,23 @@ import {
   type TerminalKeyInput
 } from "@kmux/proto";
 
+const FOCUS_REPORTS = new RegExp(
+  `^(?:${String.fromCharCode(27)}\\[[IO])+$`,
+  "u"
+);
+
+/** Focus reports reach the child, but do not indicate a user taking over input. */
+export function isTerminalFocusReport(text: string): boolean {
+  return FOCUS_REPORTS.test(text);
+}
+
 export function encodeTerminalKeyInput(input: TerminalKeyInput): string {
   switch (input.key) {
     case "Enter":
-      if (
-        input.ctrlKey &&
-        !input.altKey &&
-        !input.metaKey &&
-        !input.shiftKey
-      ) {
+      if (input.ctrlKey && !input.altKey && !input.metaKey && !input.shiftKey) {
         return TERMINAL_CTRL_ENTER_SEQUENCE;
       }
-      if (
-        input.shiftKey &&
-        !input.altKey &&
-        !input.ctrlKey &&
-        !input.metaKey
-      ) {
+      if (input.shiftKey && !input.altKey && !input.ctrlKey && !input.metaKey) {
         return TERMINAL_SHIFT_ENTER_SEQUENCE;
       }
       return "\r";

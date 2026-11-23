@@ -39,6 +39,10 @@
       "@kmux/agents/antigravity-session-index": [
         "packages/agents/src/builtins/antigravity/sessionIndex.ts"
       ],
+      "@kmux/orchestration/editor": ["packages/orchestration/src/editorDocument.ts"],
+      "@kmux/orchestration/scopes": ["packages/orchestration/src/scopes.ts"],
+      "@kmux/orchestration": ["packages/orchestration/src/index.ts"],
+      "@kmux/orchestration/node": ["packages/orchestration/src/node.ts"],
       "@kmux/ui": ["packages/ui/src/index.ts"]
     }
   }

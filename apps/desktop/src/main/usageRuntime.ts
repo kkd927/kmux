@@ -267,6 +267,8 @@ interface UsageRuntimeOptions {
   appVersion?: string;
   now?: () => number;
   emitSnapshot?: (snapshot: UsageViewSnapshot) => void;
+  /** Disable account/credential probes while retaining local token accounting. */
+  subscriptionMonitoring?: boolean;
   subscriptionFetchers?: Partial<Record<string, SubscriptionProviderFetcher>>;
   subscriptionAuthDetectors?: Partial<
     Record<string, SubscriptionProviderAuthDetector>
@@ -323,14 +325,14 @@ export function createUsageRuntime(options: UsageRuntimeOptions): UsageRuntime {
         options.env,
         listBuiltinProcessMatchers()
       ));
-  const subscriptionSources = createBuiltinSubscriptionSources({
+  const subscriptionSources = (options.subscriptionMonitoring === false ? [] : createBuiltinSubscriptionSources({
     env: options.env,
     homeDir: options.homeDir,
     agentStorageRoots: options.agentStorageRoots,
     platform: options.platform,
     appVersion: options.appVersion,
     now
-  }).map((source) => {
+  })).map((source) => {
     const fetch = ownRecordValue(options.subscriptionFetchers, source.agentId);
     const detectAuth = ownRecordValue(
       options.subscriptionAuthDetectors,

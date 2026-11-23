@@ -11,8 +11,15 @@ export type AgentCapabilityKey =
   | "sessions"
   | "usage"
   | "subscription"
+  | "launchPreferences"
+  | "orchestrationLaunch"
+  | "terminalReadiness"
+  | "skillPlacement"
+  | "workspaceTrust"
   | "processDetection"
   | "terminalNotifications";
+
+export type AgentSkillPlacementScope = "global" | "workspace";
 
 export const AGENT_CAPABILITY_KEYS = Object.freeze([
   "resume",
@@ -20,6 +27,11 @@ export const AGENT_CAPABILITY_KEYS = Object.freeze([
   "sessions",
   "usage",
   "subscription",
+  "launchPreferences",
+  "orchestrationLaunch",
+  "terminalReadiness",
+  "skillPlacement",
+  "workspaceTrust",
   "processDetection",
   "terminalNotifications"
 ] satisfies readonly AgentCapabilityKey[]);
@@ -33,7 +45,97 @@ export interface AgentDescriptorDto {
   displayName: string;
   aliases: string[];
   capabilities: AgentCapabilityKey[];
+  launchPreferences?: {
+    model: "opaque-provider-id";
+    efforts: string[];
+    effortRequiresModel: true;
+  };
+  skillPlacement?: {
+    scopes: AgentSkillPlacementScope[];
+  };
   presentation?: AgentPresentationDto;
+}
+
+/** Metadata from an installed CLI's model picker, without starting a turn. */
+export interface AgentModelOptionDto {
+  id: string;
+  displayName: string;
+  efforts: string[];
+  defaultEffort?: string;
+  effortRequired?: boolean;
+  variants?: Array<{ model: string; effort: string }>;
+}
+
+export function decodeAgentModelOptions(value: unknown): AgentModelOptionDto[] {
+  if (!Array.isArray(value) || value.length > 256) {
+    throw new TypeError("agent model catalog is invalid");
+  }
+  const models = value.map((entry): AgentModelOptionDto => {
+    if (!isRecord(entry)) throw new TypeError("agent model must be an object");
+    requireExactKeys(entry, [
+      "id",
+      "displayName",
+      "efforts",
+      "defaultEffort",
+      "effortRequired",
+      "variants"
+    ]);
+    if (!Array.isArray(entry.efforts) || entry.efforts.length > 32) {
+      throw new TypeError("agent model efforts are invalid");
+    }
+    const efforts = entry.efforts.map((effort) =>
+      boundedText(effort, 64, "model effort")
+    );
+    if (new Set(efforts).size !== efforts.length)
+      throw new TypeError("duplicate model efforts");
+    const defaultEffort =
+      entry.defaultEffort === undefined
+        ? undefined
+        : boundedText(entry.defaultEffort, 64, "default effort");
+    if (defaultEffort !== undefined && !efforts.includes(defaultEffort))
+      throw new TypeError("default effort must be supported");
+    if (
+      entry.effortRequired !== undefined &&
+      typeof entry.effortRequired !== "boolean"
+    )
+      throw new TypeError("invalid effort requirement");
+    if (entry.effortRequired === true && defaultEffort === undefined)
+      throw new TypeError("required effort needs a default");
+    let variants: AgentModelOptionDto["variants"];
+    if (entry.variants !== undefined) {
+      if (!Array.isArray(entry.variants) || entry.variants.length > 32)
+        throw new TypeError("invalid model variants");
+      variants = entry.variants.map((value) => {
+        if (!isRecord(value)) throw new TypeError("invalid model variant");
+        requireExactKeys(value, ["model", "effort"]);
+        const effort = boundedText(value.effort, 64, "variant effort");
+        if (!efforts.includes(effort))
+          throw new TypeError("variant effort must be supported");
+        return {
+          model: boundedText(value.model, 256, "variant model"),
+          effort
+        };
+      });
+      if (
+        new Set(variants.map((variant) => variant.model)).size !==
+        variants.length
+      )
+        throw new TypeError("duplicate model variants");
+    }
+    return {
+      id: boundedText(entry.id, 256, "model id"),
+      displayName: boundedText(entry.displayName, 256, "model name"),
+      efforts,
+      ...(defaultEffort === undefined ? {} : { defaultEffort }),
+      ...(entry.effortRequired === undefined
+        ? {}
+        : { effortRequired: entry.effortRequired }),
+      ...(variants === undefined ? {} : { variants })
+    };
+  });
+  if (new Set(models.map((model) => model.id)).size !== models.length)
+    throw new TypeError("duplicate model ids");
+  return models;
 }
 
 const textEncoder = new TextEncoder();
@@ -82,6 +184,8 @@ export function decodeAgentDescriptorDto(value: unknown): AgentDescriptorDto {
     "displayName",
     "aliases",
     "capabilities",
+    "launchPreferences",
+    "skillPlacement",
     "presentation"
   ]);
   const displayName = boundedText(value.displayName, 128, "display name");
@@ -104,14 +208,84 @@ export function decodeAgentDescriptorDto(value: unknown): AgentDescriptorDto {
   if (new Set(capabilities).size !== capabilities.length) {
     throw new TypeError("agent capabilities contain duplicates");
   }
+  const declaresLaunchPreferences = capabilities.includes("launchPreferences");
+  if (declaresLaunchPreferences !== (value.launchPreferences !== undefined)) {
+    throw new TypeError(
+      "agent launch preference capability and metadata must be declared together"
+    );
+  }
+  const declaresSkillPlacement = capabilities.includes("skillPlacement");
+  if (declaresSkillPlacement !== (value.skillPlacement !== undefined)) {
+    throw new TypeError(
+      "agent skill placement capability and metadata must be declared together"
+    );
+  }
   return {
     id: decodeAgentId(value.id),
     displayName,
     aliases,
     capabilities,
+    ...(value.launchPreferences === undefined
+      ? {}
+      : {
+          launchPreferences: decodeLaunchPreferences(value.launchPreferences)
+        }),
+    ...(value.skillPlacement === undefined
+      ? {}
+      : { skillPlacement: decodeSkillPlacement(value.skillPlacement) }),
     ...(value.presentation === undefined
       ? {}
       : { presentation: decodePresentation(value.presentation) })
+  };
+}
+
+function decodeSkillPlacement(
+  value: unknown
+): NonNullable<AgentDescriptorDto["skillPlacement"]> {
+  if (!isRecord(value)) {
+    throw new TypeError("agent skill placement must be an object");
+  }
+  requireExactKeys(value, ["scopes"]);
+  if (!Array.isArray(value.scopes) || value.scopes.length === 0) {
+    throw new TypeError("agent skill placement scopes are invalid");
+  }
+  const scopes = value.scopes.map((scope) => {
+    if (scope !== "global" && scope !== "workspace") {
+      throw new TypeError("agent skill placement scope is invalid");
+    }
+    return scope;
+  });
+  if (new Set(scopes).size !== scopes.length) {
+    throw new TypeError("agent skill placement scopes contain duplicates");
+  }
+  return { scopes };
+}
+
+function decodeLaunchPreferences(
+  value: unknown
+): NonNullable<AgentDescriptorDto["launchPreferences"]> {
+  if (!isRecord(value)) {
+    throw new TypeError("agent launch preferences must be an object");
+  }
+  requireExactKeys(value, ["model", "efforts", "effortRequiresModel"]);
+  if (
+    value.model !== "opaque-provider-id" ||
+    value.effortRequiresModel !== true ||
+    !Array.isArray(value.efforts) ||
+    value.efforts.length > 32
+  ) {
+    throw new TypeError("agent launch preferences are invalid");
+  }
+  const efforts = value.efforts.map((effort) =>
+    boundedText(effort, 64, "launch effort")
+  );
+  if (new Set(efforts).size !== efforts.length) {
+    throw new TypeError("agent launch efforts contain duplicates");
+  }
+  return {
+    model: "opaque-provider-id",
+    efforts,
+    effortRequiresModel: true
   };
 }
 

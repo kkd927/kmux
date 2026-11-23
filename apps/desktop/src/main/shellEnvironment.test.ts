@@ -92,7 +92,8 @@ describe("shell environment resolver", () => {
       socketPath: "/tmp/kmux.sock",
       nodePath: "/Applications/kmux.app/Contents/MacOS/kmux",
       agentHookBinDir: "/Users/test/.local/share/kmux/hooks",
-      agentWrapperBinDir: "/Users/test/.local/share/kmux/wrappers"
+      agentWrapperBinDir: "/Users/test/.local/share/kmux/wrappers",
+      cliBinDir: "/Users/test/.local/share/kmux/commands"
     });
 
     expect(policy).toEqual({
@@ -106,6 +107,7 @@ describe("shell environment resolver", () => {
       agentPath: {
         helperBinDir: "/Users/test/.local/share/kmux/hooks",
         wrapperBinDir: "/Users/test/.local/share/kmux/wrappers",
+        cliBinDir: "/Users/test/.local/share/kmux/commands",
         prependWrapperToPath: true
       },
       hookEnv: {

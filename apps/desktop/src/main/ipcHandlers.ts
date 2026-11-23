@@ -1,8 +1,10 @@
 import { BrowserWindow, ipcMain } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
+import { isRendererOrchestrationMethod } from "@kmux/orchestration";
 
 import type {
   AgentDescriptorDto,
+  AgentModelOptionDto,
   ExternalAgentSessionResumeRequest,
   ExternalAgentSessionResumeResult,
   ExternalAgentSessionsSnapshot,
@@ -46,7 +48,10 @@ import type {
   WorktreeRemoveResult,
   WorkspaceWorktreeMetadata
 } from "@kmux/proto";
-import { decodeMarkdownDocumentSubscriptionDto } from "@kmux/proto";
+import {
+  decodeAgentId,
+  decodeMarkdownDocumentSubscriptionDto
+} from "@kmux/proto";
 import type { DocumentEventSender } from "./documentService";
 import type { ResourceActivationSender } from "./resourceOpenCoordinator";
 
@@ -63,6 +68,8 @@ import type { SmoothnessProfileEvent } from "../shared/smoothnessProfile";
 import type { WorkspaceContextView } from "../shared/workspaceContextMenu";
 import type { SurfaceContextMenuContext } from "../shared/surfaceContextMenu";
 import type { TerminalStreamAttachResult } from "../shared/terminalPort";
+import type { LocalOrchestrationRequest } from "./orchestrationHost";
+import { parseSocketRequest } from "./socketRpc";
 import {
   normalizeTerminalStreamErrorReport,
   type TerminalStreamErrorReport
@@ -70,6 +77,7 @@ import {
 
 interface IpcHandlersOptions {
   getAgentCatalog: () => readonly AgentDescriptorDto[];
+  getAgentModelOptions?: (agentId: string) => Promise<AgentModelOptionDto[]>;
   getPlatformDescriptor: () => RendererPlatformDescriptor;
   getPreferredSystemLanguages: () => string[];
   getShellState: () => ShellStoreSnapshot;
@@ -86,6 +94,19 @@ interface IpcHandlersOptions {
     payloads: CreateImageAttachmentPayload[]
   ) => Promise<CreateImageAttachmentsResult>;
   getUpdaterState: () => UpdaterState;
+  handleOrchestration?: (
+    request: LocalOrchestrationRequest,
+    principal: "user:local"
+  ) => Promise<unknown>;
+  handleOrchestrationSkill?: (request: {
+    readonly method:
+      | "orchestration.skill.status"
+      | "orchestration.skill.install";
+    readonly params: {
+      readonly agentIds: readonly string[];
+      readonly confirm?: true;
+    };
+  }) => Promise<unknown>;
   dispatchRendererAction: (action: unknown) => void | Promise<void>;
   getRetainedRemoteSessions: () => RetainedRemoteSessionsSnapshot;
   terminateRetainedRemoteSession: (
@@ -203,6 +224,11 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
 
   ipcMain.handle("kmux:platform:get", () => options.getPlatformDescriptor());
   ipcMain.handle("kmux:agents:catalog", () => options.getAgentCatalog());
+  ipcMain.handle(
+    "kmux:agents:models",
+    (_event, agentId: unknown) =>
+      options.getAgentModelOptions?.(decodeAgentId(agentId)) ?? []
+  );
   ipcMain.handle("kmux:system-languages:get", () =>
     options.getPreferredSystemLanguages()
   );
@@ -232,6 +258,22 @@ export function registerIpcHandlers(options: IpcHandlersOptions): void {
     clipboardService.hasPasteableContent()
   );
   ipcMain.handle("kmux:updater:get", () => options.getUpdaterState());
+  ipcMain.handle("kmux:orchestration", (event, value: unknown) => {
+    assertTrustedMainFrame(event, "orchestration request");
+    if (!options.handleOrchestration) {
+      throw new Error("orchestration is unavailable");
+    }
+    const request = decodeRendererOrchestrationRequest(value);
+    return options.handleOrchestration(request, "user:local");
+  });
+  ipcMain.handle("kmux:orchestration-skill", (event, value: unknown) => {
+    assertTrustedMainFrame(event, "orchestration skill request");
+    if (!options.handleOrchestrationSkill) {
+      throw new Error("orchestration skill management is unavailable");
+    }
+    const request = decodeRendererOrchestrationSkillRequest(value);
+    return options.handleOrchestrationSkill(request);
+  });
   ipcMain.handle("kmux:document:subscribe", (event, value: unknown) => {
     assertTrustedMainFrame(event, "document subscription");
     options.subscribeDocument(
@@ -650,4 +692,58 @@ function assertTrustedMainFrame(
   ) {
     throw new Error(`${operation} requires the trusted main frame`);
   }
+}
+
+function decodeRendererOrchestrationRequest(
+  value: unknown
+): LocalOrchestrationRequest {
+  if (!isRecord(value) || typeof value.method !== "string") {
+    throw new TypeError("orchestration IPC request is malformed");
+  }
+  if (!isRendererOrchestrationMethod(value.method)) {
+    throw new TypeError("orchestration method is not exposed to the renderer");
+  }
+  const params = value.params === undefined ? {} : value.params;
+  if (!isRecord(params)) {
+    throw new TypeError("orchestration IPC params must be an object");
+  }
+  const parsed = parseSocketRequest(value.method, params);
+  return {
+    method: parsed.method,
+    params: parsed.params
+  } as LocalOrchestrationRequest;
+}
+
+function decodeRendererOrchestrationSkillRequest(value: unknown): {
+  readonly method: "orchestration.skill.status" | "orchestration.skill.install";
+  readonly params: {
+    readonly agentIds: readonly string[];
+    readonly confirm?: true;
+  };
+} {
+  if (
+    !isRecord(value) ||
+    (value.method !== "orchestration.skill.status" &&
+      value.method !== "orchestration.skill.install") ||
+    !isRecord(value.params)
+  ) {
+    throw new TypeError("orchestration skill IPC request is malformed");
+  }
+  const parsed = parseSocketRequest(value.method, value.params);
+  return {
+    method: parsed.method,
+    params: parsed.params
+  } as {
+    readonly method:
+      | "orchestration.skill.status"
+      | "orchestration.skill.install";
+    readonly params: {
+      readonly agentIds: readonly string[];
+      readonly confirm?: true;
+    };
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

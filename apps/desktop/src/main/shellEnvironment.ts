@@ -224,6 +224,7 @@ export interface BuildShellLaunchPolicyOptions {
   nodePath: string;
   agentHookBinDir: string;
   agentWrapperBinDir: string;
+  cliBinDir?: string;
 }
 
 export function resolveShellPath(
@@ -275,6 +276,7 @@ export function buildShellLaunchPolicy(
     agentPath: {
       helperBinDir: options.agentHookBinDir,
       wrapperBinDir: options.agentWrapperBinDir,
+      ...(options.cliBinDir ? { cliBinDir: options.cliBinDir } : {}),
       prependWrapperToPath: true
     },
     hookEnv: {

@@ -192,6 +192,9 @@ export function buildElectronLaunchOptions({
     env: {
       ...env,
       NODE_ENV: "test",
+      // A temporary HOME does not isolate the OS credential store. App/PTY
+      // fixtures must not read real account secrets or poll subscription APIs.
+      KMUX_DISABLE_SUBSCRIPTION_MONITORING: "1",
       KMUX_E2E_WINDOW_MODE: env.KMUX_E2E_WINDOW_MODE ?? "background",
       KMUX_E2E_DISABLE_QUIT_CONFIRM: env.KMUX_E2E_DISABLE_QUIT_CONFIRM ?? "1",
       KMUX_DISABLE_AUTOMATIC_RELEASE_NOTES:

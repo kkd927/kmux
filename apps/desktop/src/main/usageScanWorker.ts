@@ -9,6 +9,7 @@ import {
   builtinAgentMetadataQueryPlans,
   builtinAgentMetadataSourceRevisions,
   createBuiltinLocalExternalSessionIndexer,
+  readBuiltinAgentSessionTranscript,
   listBuiltinLocalUsageAdapters
 } from "@kmux/agents/builtin-runtime";
 import type { ExternalSessionIndexer } from "@kmux/agents";
@@ -104,7 +105,11 @@ async function handleRequest(request: UsageScanWorkerRequest): Promise<void> {
   }
 
   if (!initialized) {
-    if (request.type === "scan" || request.type === "external-sessions-scan") {
+    if (
+      request.type === "scan" ||
+      request.type === "external-sessions-scan" ||
+      request.type === "session-transcript"
+    ) {
       sendError(
         request.requestId,
         new Error("usage scan worker is not initialized"),
@@ -139,6 +144,24 @@ async function handleRequest(request: UsageScanWorkerRequest): Promise<void> {
       if (adapter.vendor === request.vendor) {
         adapter.markDirty?.(request.options);
       }
+    }
+    return;
+  }
+
+  if (request.type === "session-transcript") {
+    try {
+      const result = await readBuiltinAgentSessionTranscript({
+        ...activeConfig!,
+        ...request,
+        metadataInventory: metadataInventory!
+      });
+      send({
+        type: "session-transcript-result",
+        requestId: request.requestId,
+        result
+      });
+    } catch (error) {
+      sendError(request.requestId, error, "session transcript");
     }
     return;
   }

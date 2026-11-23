@@ -1,3 +1,8 @@
+import type {
+  RendererOrchestrationMethod,
+  OrchestrationClientRequest,
+  OrchestrationResponse
+} from "@kmux/orchestration";
 import type { AppAction } from "@kmux/core";
 import type { RendererPlatformDescriptor } from "../../shared/platform/rendererPlatform";
 import type { SmoothnessProfileEvent } from "../../shared/smoothnessProfile";
@@ -8,6 +13,7 @@ import type {
 } from "../../shared/surfaceContextMenu";
 import type {
   AgentDescriptorDto,
+  AgentModelOptionDto,
   CreateImageAttachmentPayload,
   CreateImageAttachmentsResult,
   ExternalAgentSessionResumeRequest,
@@ -59,6 +65,7 @@ declare global {
     __kmuxLastShellPublishAt?: number;
     kmux: {
       getAgentCatalog(): Promise<AgentDescriptorDto[]>;
+      getAgentModelOptions(agentId: string): Promise<AgentModelOptionDto[]>;
       getPlatform(): Promise<RendererPlatformDescriptor>;
       getPreferredSystemLanguages(): Promise<string[]>;
       automaticReleaseNotesEnabled?(): boolean;
@@ -75,6 +82,13 @@ declare global {
         request: ExternalAgentSessionResumeRequest
       ): Promise<ExternalAgentSessionResumeResult>;
       getUpdaterState(): Promise<UpdaterState>;
+      orchestration<M extends RendererOrchestrationMethod>(
+        request: OrchestrationClientRequest<M>
+      ): Promise<OrchestrationResponse<M>>;
+      orchestrationSkill(request: {
+        method: "orchestration.skill.status" | "orchestration.skill.install";
+        params: { agentIds: string[]; confirm?: true };
+      }): Promise<unknown>;
       dispatch(action: AppAction): Promise<void>;
       getRetainedRemoteSessions(): Promise<RetainedRemoteSessionsSnapshot>;
       terminateRetainedRemoteSession(

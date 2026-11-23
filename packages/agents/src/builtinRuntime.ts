@@ -2,6 +2,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { delimiter } from "node:path";
 
 import type {
+  AgentModelOptionDto,
   AgentDescriptorDto,
   AgentId,
   AgentScopeSettings,
@@ -19,16 +20,22 @@ import type {
 
 import { createBuiltinAgentComposition } from "./composition";
 import {
+  resolveAgentLaunchPolicy,
   resolveAgentResumePolicy,
   type ResolvedAgentLaunchPolicy
 } from "./command";
 import type {
+  AgentLaunchPreferences,
+  AgentSkillPlacementCapability,
+  AgentWorkspaceTrustPreparation,
   AgentSessionSourceProjection,
   AgentUsageSourceProjection,
   AgentUsageRuntimeOptions,
   AgentTerminalNotificationDecision
 } from "./contracts";
 import { resolveAgentPortablePath } from "./portablePath";
+import { readAgentSessionTranscript } from "./sessionTranscript";
+import type { AgentSessionTranscriptReadResult } from "./contracts";
 import {
   createMaterializedExternalSessionIndexer,
   materializeAgentSessionSources,
@@ -37,9 +44,27 @@ import {
 } from "./externalSessionRuntime";
 import { createAgentProcessMatcher } from "./processDetection";
 import { normalizeAgentScopeSettings } from "./settings";
+import { classifyAgentTerminalSnapshot } from "./terminalReadiness";
+import type { AgentTerminalReadiness } from "./contracts";
+export { createAgentModelCatalog } from "./modelCatalog";
 
 const composition = createBuiltinAgentComposition();
+
+export function classifyBuiltinAgentTerminalReadiness(input: {
+  readonly agentId: string;
+  readonly visible: string;
+  readonly agentProcessDetected: boolean;
+}): AgentTerminalReadiness {
+  const agentId = resolveBuiltinAgentId(input.agentId);
+  return classifyAgentTerminalSnapshot({
+    ...input,
+    capability: agentId
+      ? composition.resolver("terminalReadiness").resolve(agentId)
+      : undefined
+  });
+}
 const commands = composition.commands();
+const definitionRevisions = new Map(composition.definitionRevisions());
 const processMatchers = Object.freeze(
   composition.materialize("processDetection").map((binding) => ({
     agentId: binding.agentId,
@@ -47,14 +72,86 @@ const processMatchers = Object.freeze(
   }))
 );
 
+export async function readBuiltinAgentSessionTranscript(options: {
+  readonly agentId: string;
+  readonly sessionId: string;
+  readonly metadataInventory: AgentMetadataInventoryService;
+  readonly homeDir: string;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly agentStorageRoots?: AgentStorageRoots;
+  readonly agentSettings?: AgentScopeSettings;
+  readonly dispatchMarker?: string;
+  readonly maxBytes?: number;
+}): Promise<AgentSessionTranscriptReadResult> {
+  const agentId = resolveBuiltinAgentId(options.agentId);
+  const sessions = agentId
+    ? composition.resolver("sessions").resolve(agentId)
+    : undefined;
+  if (!agentId || !sessions?.transcript) {
+    return {
+      status: "unsupported",
+      text: "",
+      truncated: false,
+      reason: "provider has no transcript reader"
+    };
+  }
+  const source = materializeAgentSessionSources({
+    bindings: [{ agentId, capability: sessions }],
+    metadataSources: composition.metadataSources(),
+    runtime: options
+  })[0]!;
+  return readAgentSessionTranscript({
+    ...options,
+    agentId,
+    roots: source.roots,
+    capability: sessions.transcript
+  });
+}
+
 export function listBuiltinAgentDescriptors(): readonly AgentDescriptorDto[] {
   return composition.catalog.listDescriptors();
+}
+
+export async function listBuiltinAgentModels(options: {
+  agentId: AgentId;
+  homeDir: string;
+  env: NodeJS.ProcessEnv;
+  settings?: AgentSettings;
+}): Promise<readonly AgentModelOptionDto[]> {
+  const capability = composition
+    .resolver("launchPreferences")
+    .resolve(options.agentId);
+  const command = commands.get(options.agentId);
+  if (!capability?.listModels || !command) return [];
+  return capability.listModels({
+    homeDir: options.homeDir,
+    env: options.env,
+    command: options.settings?.command ?? command.executable
+  });
 }
 
 export function builtinAgentDescriptor(
   agentId: AgentId
 ): AgentDescriptorDto | undefined {
   return composition.catalog.descriptor(agentId);
+}
+
+export function resolveBuiltinAgentSkillPlacement(
+  agentId: AgentId
+): AgentSkillPlacementCapability | undefined {
+  return composition.resolver("skillPlacement").resolve(agentId);
+}
+
+export function prepareBuiltinAgentWorkspaceTrust(options: {
+  readonly agentId: AgentId;
+  readonly cwd: string;
+  readonly homeDir: string;
+  readonly env?: NodeJS.ProcessEnv;
+}): AgentWorkspaceTrustPreparation {
+  const capability = composition
+    .resolver("workspaceTrust")
+    .resolve(options.agentId);
+  return capability ? capability.prepare(options) : "not-required";
 }
 
 export function resolveBuiltinAgentId(input: string): AgentId | undefined {
@@ -71,6 +168,34 @@ export function resolveBuiltinAgentResumePolicy(options: {
   const resume = composition.resolver("resume").resolve(options.agentId);
   if (!command || !resume) return undefined;
   return resolveAgentResumePolicy({ ...options, command, resume });
+}
+
+export function resolveBuiltinAgentLaunchPolicy(options: {
+  agentId: AgentId;
+  settings?: AgentSettings;
+  preferences?: AgentLaunchPreferences;
+}): ResolvedAgentLaunchPolicy | undefined {
+  const command = commands.get(options.agentId);
+  if (!command) return undefined;
+  const resolved = resolveAgentLaunchPolicy({
+    ...options,
+    command,
+    defaultArgs: composition
+      .resolver("orchestrationLaunch")
+      .resolve(options.agentId)?.defaultArgs,
+    ...(options.preferences
+      ? {
+          preferencesCapability: composition
+            .resolver("launchPreferences")
+            .resolve(options.agentId)
+        }
+      : {})
+  });
+  return {
+    ...resolved,
+    agentDescriptorRevision:
+      definitionRevisions.get(options.agentId) ?? "unknown"
+  };
 }
 
 export function resolvedAgentCommandIsAvailable(

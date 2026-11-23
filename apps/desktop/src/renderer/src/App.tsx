@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import bundledReleaseNotes from "virtual:kmux-release-notes";
 
 import type { AppAction } from "@kmux/core";
@@ -34,6 +42,7 @@ import {
 } from "@kmux/ui";
 
 import { AppOverlays } from "./components/AppOverlays";
+import type { WorkflowRunRequest } from "./components/WorkflowsPanel";
 import { Codicon } from "./components/Codicon";
 import { PaneTree } from "./components/PaneTree";
 import { RightSidebarHost } from "./components/RightSidebarHost";
@@ -96,7 +105,23 @@ type ActiveShortcutContext = {
   activePaneId: string;
   activeSurfaceId: string;
 };
-type RightPanelKind = "usage" | "sessions" | null;
+type RightPanelKind =
+  | "usage"
+  | "sessions"
+  | "workflows"
+  | null;
+type PaletteItem = {
+  id: string;
+  label: string;
+  subtitle: string;
+  run: () => void | Promise<void>;
+};
+type PublishedWorkflowPaletteEntry = {
+  workflowVersionId: string;
+  definitionId: string;
+  version: number;
+  name: string;
+};
 type DismissibleUiState = {
   paletteOpen: boolean;
   notificationsOpen: boolean;
@@ -175,8 +200,14 @@ const forgetTerminalStreamSurface = (surfaceId: string): void => {
 };
 const RIGHT_PANEL_TABS = [
   { key: "usage", label: "Usage" },
-  { key: "sessions", label: "Sessions" }
+  { key: "sessions", label: "Sessions" },
+  { key: "workflows", label: "Workflows" }
 ] as const;
+const WorkflowsPanel = lazy(() =>
+  import("./components/WorkflowsPanel").then((module) => ({
+    default: module.WorkflowsPanel
+  }))
+);
 
 function createRendererRequestId(prefix: string): string {
   return `${prefix}_${globalThis.crypto.randomUUID()}`;
@@ -219,12 +250,30 @@ export function App(): JSX.Element {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteSelectedIndex, setPaletteSelectedIndex] = useState(0);
+  const [paletteWorkflowVersions, setPaletteWorkflowVersions] = useState<
+    PublishedWorkflowPaletteEntry[]
+  >([]);
+  const [paletteWorkflowLoading, setPaletteWorkflowLoading] = useState(false);
+  const [workflowRunRequest, setWorkflowRunRequest] =
+    useState<WorkflowRunRequest | null>(null);
+  const [paletteWorkflowError, setPaletteWorkflowError] = useState<
+    string | null
+  >(null);
+  const [paletteActionBusy, setPaletteActionBusy] = useState(false);
+  const [paletteActionError, setPaletteActionError] = useState<string | null>(
+    null
+  );
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [activeRightPanel, setActiveRightPanel] =
     useState<RightPanelKind>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialCategory, setSettingsInitialCategory] = useState<
-    "general" | "ssh" | "terminal" | "notifications" | "shortcuts"
+    | "general"
+    | "ssh"
+    | "terminal"
+    | "orchestration"
+    | "notifications"
+    | "shortcuts"
   >("general");
   const [searchSurfaceId, setSearchSurfaceId] = useState<string | null>(null);
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(
@@ -688,12 +737,62 @@ export function App(): JSX.Element {
     closeSurfaceRestartConfirm: () => setPendingSurfaceRestart(null)
   });
 
-  const paletteItems = useMemo(() => {
+  useEffect(() => {
+    if (!paletteOpen || !shellReady) {
+      return;
+    }
+
+    let current = true;
+    setPaletteWorkflowVersions([]);
+    setPaletteWorkflowLoading(true);
+    setPaletteWorkflowError(null);
+    void window.kmux
+      .orchestration({ method: "workflow.list", params: {} })
+      .then((value) => {
+        if (current) {
+          setPaletteWorkflowVersions(
+            parsePublishedWorkflowPaletteEntries(value)
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        if (current) {
+          setPaletteWorkflowError(describeError(error));
+        }
+      })
+      .finally(() => {
+        if (current) {
+          setPaletteWorkflowLoading(false);
+        }
+      });
+
+    return () => {
+      current = false;
+    };
+  }, [paletteOpen, shellReady]);
+
+  const paletteItems = useMemo<PaletteItem[]>(() => {
     if (!shellReady) {
       return [];
     }
 
+    const workflowItems: PaletteItem[] = paletteWorkflowVersions.map(
+      (workflow) => ({
+        id: `run-workflow:${workflow.workflowVersionId}`,
+        label: `Run workflow: ${workflow.name}`,
+        subtitle: `Published v${workflow.version}`,
+        run: () => {
+          setWorkflowRunRequest({
+            requestId: globalThis.crypto.randomUUID(),
+            workflowVersionId: workflow.workflowVersionId
+          });
+          setActiveRightPanel("workflows");
+        }
+      })
+    );
+
     return [
+      ...workflowItems,
       {
         id: "new-workspace",
         label: "New workspace",
@@ -797,7 +896,7 @@ export function App(): JSX.Element {
         item.label.toLowerCase().includes(paletteQuery.toLowerCase()) ||
         item.subtitle.toLowerCase().includes(paletteQuery.toLowerCase())
     );
-  }, [paletteQuery, shellReady]);
+  }, [paletteQuery, paletteWorkflowVersions, shellReady]);
 
   useEffect(() => {
     if (!paletteOpen) {
@@ -1255,14 +1354,22 @@ export function App(): JSX.Element {
         </main>
         {activeRightPanel ? (
           <RightSidebarHost
-            title={activeRightPanel === "usage" ? "Usage" : "Sessions"}
+            title={
+              activeRightPanel === "usage"
+                ? "Usage"
+                : activeRightPanel === "sessions"
+                  ? "Sessions"
+                  : "Workflows"
+            }
             tabs={[...RIGHT_PANEL_TABS]}
             activeTab={activeRightPanel}
             onSelectTab={(key) => setActiveRightPanel(key as RightPanelKind)}
             testId={
               activeRightPanel === "usage"
                 ? "usage-right-panel"
-                : "sessions-right-panel"
+                : activeRightPanel === "sessions"
+                  ? "sessions-right-panel"
+                  : "workflows-right-panel"
             }
           >
             {activeRightPanel === "usage" ? (
@@ -1284,8 +1391,15 @@ export function App(): JSX.Element {
                   })();
                 }}
               />
-            ) : (
+            ) : activeRightPanel === "sessions" ? (
               <ExternalSessionsPanelContainer />
+            ) : (
+              <Suspense fallback={<div>Loading Workflows…</div>}>
+                <WorkflowsPanel
+                  runRequest={workflowRunRequest}
+                  onRunRequestConsumed={() => setWorkflowRunRequest(null)}
+                />
+              </Suspense>
             )}
           </RightSidebarHost>
         ) : null}
@@ -1301,6 +1415,19 @@ export function App(): JSX.Element {
         paletteQuery={paletteQuery}
         paletteSelectedIndex={paletteSelectedIndex}
         paletteItems={paletteItems}
+        paletteBusy={paletteActionBusy}
+        paletteStatus={
+          paletteActionError
+            ? { kind: "error", message: paletteActionError }
+            : paletteWorkflowError
+              ? {
+                  kind: "error",
+                  message: `Saved workflows unavailable: ${paletteWorkflowError}`
+                }
+              : paletteWorkflowLoading
+                ? { kind: "loading", message: "Loading saved workflows…" }
+                : null
+        }
         onClosePalette={closePalette}
         onChangePaletteQuery={setPaletteQuery}
         onSelectPaletteIndex={setPaletteSelectedIndex}
@@ -1452,6 +1579,7 @@ export function App(): JSX.Element {
     setPaletteOpen(false);
     setPaletteQuery("");
     setPaletteSelectedIndex(0);
+    setPaletteActionError(null);
   }
 
   function closeWorktreeDialog(): void {
@@ -1465,6 +1593,7 @@ export function App(): JSX.Element {
   function openPalette(): void {
     setPaletteQuery("");
     setPaletteSelectedIndex(0);
+    setPaletteActionError(null);
     setPaletteOpen(true);
   }
 
@@ -1473,6 +1602,7 @@ export function App(): JSX.Element {
       | "general"
       | "ssh"
       | "terminal"
+      | "orchestration"
       | "notifications"
       | "shortcuts" = "general"
   ): void {
@@ -2123,14 +2253,64 @@ export function App(): JSX.Element {
     setWorktreeDialog(null);
   }
 
-  function executePaletteItem(index: number): void {
+  async function executePaletteItem(index: number): Promise<void> {
     const item = paletteItems[index];
-    if (!item) {
+    if (!item || paletteActionBusy) {
       return;
     }
-    item.run();
-    closePalette();
+    setPaletteActionBusy(true);
+    setPaletteActionError(null);
+    try {
+      await item.run();
+      closePalette();
+    } catch (error) {
+      setPaletteActionError(describeError(error));
+    } finally {
+      setPaletteActionBusy(false);
+    }
   }
+}
+
+function parsePublishedWorkflowPaletteEntries(
+  value: unknown
+): PublishedWorkflowPaletteEntry[] {
+  if (!isUnknownRecord(value) || !Array.isArray(value.versions)) {
+    throw new Error("Workflow catalog response is invalid");
+  }
+
+  const latestByDefinition = new Map<string, PublishedWorkflowPaletteEntry>();
+  for (const candidate of value.versions) {
+    if (
+      !isUnknownRecord(candidate) ||
+      typeof candidate.workflowVersionId !== "string" ||
+      typeof candidate.definitionId !== "string" ||
+      typeof candidate.version !== "number" ||
+      !Number.isInteger(candidate.version) ||
+      candidate.version < 1 ||
+      typeof candidate.name !== "string" ||
+      candidate.name.trim().length === 0
+    ) {
+      throw new Error("Workflow catalog contains an invalid published version");
+    }
+    const entry: PublishedWorkflowPaletteEntry = {
+      workflowVersionId: candidate.workflowVersionId,
+      definitionId: candidate.definitionId,
+      version: candidate.version,
+      name: candidate.name
+    };
+    const current = latestByDefinition.get(entry.definitionId);
+    if (!current || entry.version > current.version) {
+      latestByDefinition.set(entry.definitionId, entry);
+    }
+  }
+
+  return [...latestByDefinition.values()].sort((left, right) =>
+    left.name.localeCompare(right.name)
+  );
+}
+
+function isUnknownRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function omitDeprecatedShortcuts(

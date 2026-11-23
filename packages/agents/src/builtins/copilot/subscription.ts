@@ -158,14 +158,48 @@ export async function probeCopilotQuotaViaRpc(
     readonly timeoutMs?: number;
   } = {}
 ): Promise<CopilotQuotaResult> {
+  return withCopilotMetadataRpc(options, async (rpc) => {
+    const result = await rpc.request("account.getQuota", {});
+    if (!isRecord(result) || !isRecord(result.quotaSnapshots)) {
+      throw new Error("Copilot quota response is malformed");
+    }
+    let account: CopilotAccountMetadata | undefined;
+    try {
+      account = parseCopilotAccountMetadata(
+        await rpc.request("account.getCurrentAuth", {})
+      );
+    } catch {
+      // Older clients may not expose account metadata.
+    }
+    return {
+      quotaSnapshots: result.quotaSnapshots,
+      ...(account ? { account } : {})
+    };
+  });
+}
+
+/** Shared bounded read-only connection for account and model metadata. */
+export async function withCopilotMetadataRpc<T>(
+  options: {
+    readonly command?: string;
+    readonly homeDir?: string;
+    readonly env?: NodeJS.ProcessEnv;
+    readonly spawnImpl?: CopilotSpawn;
+    readonly timeoutMs?: number;
+  },
+  query: (rpc: {
+    request(method: string, params: Record<string, unknown>): Promise<unknown>;
+  }) => Promise<T>
+): Promise<T> {
   const spawnImpl: CopilotSpawn =
     options.spawnImpl ??
     ((command, args, spawnOptions) => spawn(command, [...args], spawnOptions));
   const child = spawnImpl(
-    "copilot",
+    options.command ?? "copilot",
     ["--headless", "--no-auto-update", "--stdio", "--log-level", "none"],
     {
       env: { ...process.env, ...options.env },
+      ...(options.homeDir ? { cwd: options.homeDir } : {}),
       stdio: ["pipe", "pipe", "pipe"]
     }
   );
@@ -174,23 +208,7 @@ export async function probeCopilotQuotaViaRpc(
   try {
     return await withTimeout(async () => {
       await rpc.request("connect", {});
-      const result = await rpc.request("account.getQuota", {});
-      if (!isRecord(result) || !isRecord(result.quotaSnapshots)) {
-        throw new Error("Copilot quota response is malformed");
-      }
-      let account: CopilotAccountMetadata | undefined;
-      try {
-        account = parseCopilotAccountMetadata(
-          await rpc.request("account.getCurrentAuth", {})
-        );
-      } catch {
-        // Older Copilot clients may not expose account metadata. Quota usage is
-        // still useful without a plan label or reset date.
-      }
-      return {
-        quotaSnapshots: result.quotaSnapshots,
-        ...(account ? { account } : {})
-      };
+      return query(rpc);
     }, options.timeoutMs ?? COPILOT_QUOTA_TIMEOUT_MS);
   } finally {
     rpc.dispose();

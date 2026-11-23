@@ -324,6 +324,7 @@ describe("agent hook normalization", () => {
         "agy",
         "PreInvocation",
         {
+          invocationNum: 0,
           conversationId: "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
           transcriptPath: "/Users/test/project/.gemini/jetski/transcript.jsonl",
           artifactDirectoryPath: "/Users/test/project/.gemini/jetski/artifacts",
@@ -361,6 +362,7 @@ describe("agent hook normalization", () => {
       "agy",
       "PreInvocation",
       {
+        invocationNum: 0,
         conversationId: "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890",
         workspacePaths: ["/Users/test/project"]
       },
@@ -381,6 +383,13 @@ describe("agent hook normalization", () => {
       }
     });
     expect(event?.surfaceId).toBeUndefined();
+
+    expect(
+      normalizeAgentHookInvocation("agy", "PreInvocation", {
+        invocationNum: 4,
+        conversationId: "9a8b7c6d-5e4f-3a2b-1c0d-ef1234567890"
+      })
+    ).toBeNull();
   });
 
   it("keeps Codex routing and vendor session ids separate", () => {

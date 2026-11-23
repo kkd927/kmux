@@ -1,3 +1,5 @@
+import { socketPeerPid } from "./socketPeerPid";
+import { configureLocalOrchestration } from "./localOrchestrationExecution";
 import {
   app,
   BrowserWindow,
@@ -7,6 +9,7 @@ import {
   utilityProcess
 } from "electron";
 import { homedir } from "node:os";
+
 import { watch as watchFile } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -15,7 +18,10 @@ import electronUpdater from "electron-updater";
 
 import {
   listBuiltinAgentDescriptors,
+  listBuiltinAgentModels,
+  createAgentModelCatalog,
   normalizeBuiltinAgentScopeSettings,
+  resolveBuiltinAgentSkillPlacement,
   resolveBuiltinAgentResumePolicy,
   resolvedAgentCommandIsAvailable
 } from "@kmux/agents/builtin-runtime";
@@ -45,6 +51,7 @@ import {
 } from "@kmux/persistence";
 
 import { createAppRuntime } from "./appRuntime";
+import { TerminalHistoryStore } from "./terminalHistory";
 import { DocumentService } from "./documentService";
 import { ResourceOpenCoordinator } from "./resourceOpenCoordinator";
 import { ensureLocalAgentIntegrations } from "./agentIntegration";
@@ -81,6 +88,10 @@ import { resolveAutoUpdaterChannel } from "./updaterChannel";
 import { createUsageRuntime } from "./usageRuntime";
 import { createUsageScanWorkerClient } from "./usageScanWorkerClient";
 import { createWorktreeRuntime } from "./worktreeRuntime";
+import {
+  resolveCliRuntimePaths,
+  synchronizeKmuxCliLauncher
+} from "./cliRuntime";
 import {
   createNativeUpdaterDialogs,
   createNativeUpdaterNotifier,
@@ -191,6 +202,17 @@ import { createSshWorkspaceCreationRuntime } from "./remote/sshWorkspaceCreation
 import { createSshAskpassBroker } from "./remote/sshAskpassBroker";
 import { createExternalSessionResumeRuntime } from "./externalSessionResumeRuntime";
 import {
+  LocalOrchestrationHost,
+  type LocalOrchestrationRequest
+} from "./orchestrationHost";
+
+import {
+  captureTerminalCoordinator,
+  captureTerminalWorkflowCaller
+} from "./localCoordinatorCaller";
+
+import { OrchestrationSkillManager } from "./orchestrationSkill";
+import {
   createLocalPathResolver,
   createTargetServiceRegistry
 } from "./targets/targetServiceRegistry";
@@ -220,6 +242,12 @@ import {
 const paths = defaultAppPaths(homedir(), process.env);
 configureElectronUserDataDir({ app });
 const currentDir = dirname(fileURLToPath(import.meta.url));
+const cliRuntimePaths = resolveCliRuntimePaths({
+  currentDir,
+  isPackaged: app.isPackaged,
+  resourcesPath: process.resourcesPath,
+  processExecPath: process.execPath
+});
 const { autoUpdater } = electronUpdater;
 let ptyHost: PtyHostManager | null = null;
 let remoteHost: RemoteHostManager | null = null;
@@ -342,6 +370,14 @@ async function bootstrap(): Promise<void> {
     supportsDock: platformRuntime.desktop.supportsDock
   });
   socketServer = new KmuxSocketServer({
+    resolvePeerPid: (socket) =>
+      socketPeerPid(
+        join(
+          currentDir.replace(/app\.asar(?=\/)/u, "app.asar.unpacked"),
+          "socket-peer"
+        ),
+        socket
+      ),
     socketPath: paths.socketPath
   });
   await socketServer.start();
@@ -354,6 +390,22 @@ async function bootstrap(): Promise<void> {
   const snapshotStore = createSnapshotStore(paths.statePath);
   const windowStateStore = createWindowStateStore(paths.windowStatePath);
   const usageHistoryStore = createUsageHistoryStore(paths.usageHistoryPath);
+  const orchestration = await LocalOrchestrationHost.open({
+    filePath: paths.orchestrationStatePath,
+    artifactRoot: paths.orchestrationArtifactRoot
+  }).catch((cause: unknown) => {
+    const error = new Error(
+      `Orchestration unavailable: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
+    console.error(error.message);
+    return error;
+  });
+  const orchestrationHost =
+    orchestration instanceof Error ? undefined : orchestration;
+  function requireOrchestration() {
+    if (orchestration instanceof Error) throw orchestration;
+    return orchestration;
+  }
   const shellWrapperRuntime = createShellWrapperRuntime({
     platform: platformRuntime.platformId,
     tmpDir: join(paths.cacheDir, "shell-wrappers")
@@ -373,6 +425,11 @@ async function bootstrap(): Promise<void> {
     source: resolvedShellEnv.source
   });
   const userHomeDir = resolvedShellEnv.baseEnv.HOME ?? homedir();
+  const orchestrationSkillManager = new OrchestrationSkillManager({
+    homeDir: userHomeDir,
+    env: resolvedShellEnv.baseEnv,
+    resolveSkillPlacement: resolveBuiltinAgentSkillPlacement
+  });
   const agentStorageRoots = resolveAgentStorageRoots({
     homeDir: userHomeDir,
     env: resolvedShellEnv.baseEnv
@@ -451,6 +508,8 @@ async function bootstrap(): Promise<void> {
   };
   writeAgentHookHelpers(paths.agentHookBinDir);
   writeAgentWrapperBinaries(paths.agentWrapperBinDir);
+  synchronizeKmuxCliLauncher(paths.cliBinDir, cliRuntimePaths);
+  if (cliRuntimePaths.warning) console.warn(cliRuntimePaths.warning);
   for (const result of ensureLocalAgentIntegrations({
     env: resolvedShellEnv.baseEnv,
     homeDir: userHomeDir,
@@ -483,6 +542,7 @@ async function bootstrap(): Promise<void> {
   const localExternalSessionIndexer = localAgentMetadataScanner.sessions;
 
   const runtime = createAppRuntime({
+    terminalHistory: new TerminalHistoryStore(paths.terminalHistoryRoot),
     paths: {
       ...paths,
       nodePath: process.execPath
@@ -499,7 +559,8 @@ async function bootstrap(): Promise<void> {
         socketPath: paths.socketPath,
         nodePath: process.execPath,
         agentHookBinDir: paths.agentHookBinDir,
-        agentWrapperBinDir: paths.agentWrapperBinDir
+        agentWrapperBinDir: paths.agentWrapperBinDir,
+        cliBinDir: paths.cliBinDir
       }),
     defaultShellPath: resolvedShellEnv.shellPath,
     shortcutDefaultsPlatform: platformRuntime.platformId,
@@ -650,6 +711,8 @@ async function bootstrap(): Promise<void> {
     getState: runtime.getState,
     dispatchAppAction: runtime.dispatchAppAction,
     env: resolvedShellEnv.baseEnv,
+    subscriptionMonitoring:
+      process.env.KMUX_DISABLE_SUBSCRIPTION_MONITORING !== "1",
     historyStore: usageHistoryStore,
     homeDir: userHomeDir,
     agentStorageRoots,
@@ -1017,19 +1080,54 @@ async function bootstrap(): Promise<void> {
   const localTargetServices: TargetServiceSet<LocalPath> = {
     terminal: {
       async create(request) {
+        const state = runtime.getState();
+        if (state.panes[request.paneId]?.workspaceId !== request.workspaceId) {
+          throw new Error(
+            "terminal creation requires a pane in its requested workspace"
+          );
+        }
+        const priorSurfaces = new Set(
+          Object.values(state.panes)
+            .filter((pane) => pane.workspaceId === request.workspaceId)
+            .flatMap((pane) => pane.surfaceIds)
+        );
         const cwd = resolveLocalPath({
           kind: "local",
           path: request.launch.cwd
         });
         runtime.dispatchAppAction({
-          type: "surface.create",
-          paneId: request.paneId,
-          cwd,
-          launch: {
-            ...request.launch,
-            cwd
+          type: "surface.open",
+          workspaceId: request.workspaceId,
+          placement: request.placement ?? {
+            kind: "tab",
+            paneId: request.paneId
+          },
+          init: {
+            kind: "terminal",
+            cwd,
+            launch: { ...request.launch, cwd }
           }
         });
+        // Resolve identity within this synchronous creation boundary, before
+        // another asynchronous worker can create a Surface in the same pane.
+        const createdState = runtime.getState();
+        const surfaceId = Object.values(createdState.panes)
+          .filter((pane) => pane.workspaceId === request.workspaceId)
+          .flatMap((pane) => pane.surfaceIds)
+          .find((candidate) => !priorSurfaces.has(candidate));
+        const session = surfaceId
+          ? terminalSessionForSurface(createdState, surfaceId)
+          : undefined;
+        if (!surfaceId || !session)
+          throw new Error(
+            "terminal creation produced no Surface/session identity"
+          );
+        if (resolveLocalPath(session.launch.cwd) !== cwd) {
+          throw new Error(
+            `terminal creation changed its requested cwd (requested=${cwd}, stored=${resolveLocalPath(session.launch.cwd)})`
+          );
+        }
+        return { surfaceId, sessionId: session.id };
       },
       async terminate(request) {
         const surfaceId =
@@ -1124,16 +1222,22 @@ async function bootstrap(): Promise<void> {
       const remoteServices: TargetServiceSet<RemotePath> = {
         terminal: {
           async create(request) {
+            if (request.placement && request.placement.kind !== "tab") {
+              throw new Error(
+                "split placement is not supported by this remote terminal provider"
+              );
+            }
+            const paneId = request.placement?.paneId ?? request.paneId;
             requireRemoteWorkspaceScope(
               runtime.getState(),
               targetId,
               request.workspaceId,
-              request.paneId
+              paneId
             );
             const cwd = resolveRemotePath(request.launch.cwd);
-            await providerRemoteLifecycle.executeRendererLifecycleAction({
+            return providerRemoteLifecycle.createTerminal({
               type: "surface.create",
-              paneId: request.paneId,
+              paneId,
               cwd,
               launch: { ...request.launch, cwd }
             });
@@ -1209,6 +1313,22 @@ async function bootstrap(): Promise<void> {
       return remoteServices;
     }
   });
+  const orchestrationPtyHost = ptyHost;
+  const localAgentReadiness = orchestrationHost
+    ? configureLocalOrchestration({
+        ptyHost,
+        desktopInstallationId,
+        orchestrationHost,
+        paths,
+        runtime,
+        resolveLocalPath,
+        localAgentMetadataScanner,
+        localTargetServices,
+        targetServices,
+        launchEnv: resolvedShellEnv.baseEnv,
+        userHomeDir
+      }).readiness
+    : undefined;
   targetHistoryRuntime = createTargetHistoryRuntime({
     targetServices,
     getState: runtime.getState,
@@ -1435,6 +1555,12 @@ async function bootstrap(): Promise<void> {
     [KMUX_RAW_OUTPUT_ROOT_ENV]: paths.rawOutputRoot,
     [KMUX_NATIVE_CACHE_ROOT_ENV]: paths.nativeCacheRoot
   });
+  void orchestrationHost?.drive().catch((error) => {
+    console.error(
+      "Failed to resume durable orchestration after PTY Host start",
+      error
+    );
+  });
   const requireSurfaceWorkspaceTarget = (surfaceId: string) => {
     const state = runtime.getState();
     const surface = state.surfaces[surfaceId];
@@ -1451,6 +1577,104 @@ async function bootstrap(): Promise<void> {
       runtime.dispatchAppAction(
         authorizeRendererAppAction(action, runtime.getState())
       ),
+    handleOrchestration: async (request, principal, callerPid) => {
+      if (
+        (request.method === "orchestration.run.create" ||
+          request.method === "workflow.run") &&
+        request.params !== null &&
+        typeof request.params === "object" &&
+        !Array.isArray(request.params)
+      ) {
+        const params = request.params as Record<string, unknown>;
+        const attachmentField =
+          request.method === "workflow.run"
+            ? "callerAttachment"
+            : "coordinatorAttachment";
+        const attachment = params[attachmentField];
+        if (
+          attachment !== null &&
+          typeof attachment === "object" &&
+          !Array.isArray(attachment)
+        ) {
+          const value = attachment as Record<string, unknown>;
+          const surfaceId = value.surfaceId;
+          const sessionId = value.sessionId;
+          const generation =
+            typeof surfaceId === "string" && typeof sessionId === "string"
+              ? orchestrationPtyHost.sessionRef(surfaceId, sessionId)
+              : null;
+          if (!generation) {
+            throw new Error(
+              "attached Coordinator invocation has no exact live terminal generation"
+            );
+          }
+          if (principal !== `session:${sessionId}`)
+            throw new Error(
+              "Coordinator attachment requires its authenticated terminal invocation"
+            );
+          const execution = {
+            targetId: "local",
+            targetAuthority: `desktop:${desktopInstallationId}`,
+            surfaceId: surfaceId as string,
+            sessionId: sessionId as string,
+            generation: {
+              kind: "local" as const,
+              runtimeEpoch: generation.epoch
+            },
+            inputAuthorityRef: "unclaimed"
+          };
+          const captureOwner =
+            request.method === "workflow.run"
+              ? captureTerminalWorkflowCaller
+              : captureTerminalCoordinator;
+          const owner = await captureOwner(
+            orchestrationPtyHost.sessionPid(sessionId as string),
+            callerPid
+          );
+          if (!owner) {
+            const { callerAttachment: _attachment, ...standaloneParams } =
+              params;
+            return requireOrchestration().handle(
+              {
+                ...request,
+                params: standaloneParams
+              } as LocalOrchestrationRequest,
+              principal,
+              callerPid
+            );
+          }
+          return requireOrchestration().handle(
+            {
+              ...request,
+              params: {
+                ...params,
+                [attachmentField]: {
+                  transport: "terminal",
+                  surfaceId,
+                  sessionId,
+                  execution,
+                  process: owner
+                }
+              }
+            } as LocalOrchestrationRequest,
+            principal,
+            callerPid
+          );
+        }
+      }
+      return requireOrchestration().handle(request, principal, callerPid);
+    },
+    handleOrchestrationSkill: ({ method, params }) => {
+      if (method === "orchestration.skill.install") {
+        if (params.confirm !== true) {
+          throw new Error(
+            "orchestration skill installation requires confirmation"
+          );
+        }
+        return orchestrationSkillManager.installExplicit(params.agentIds);
+      }
+      return orchestrationSkillManager.inspect(params.agentIds);
+    },
     sendSurfaceText: async (surfaceId, text, operationId) => {
       const target = requireSurfaceWorkspaceTarget(surfaceId);
       if (target.kind === "local") {
@@ -1509,17 +1733,48 @@ async function bootstrap(): Promise<void> {
     },
     identify: runtime.identify,
     isSurfaceVisibleToUser,
-    onAgentHook: ({ agent, payload }) => {
+    onAgentHook: ({
+      agent,
+      payload,
+      normalizedEvent,
+      authenticatedSessionId
+    }) => {
       recordAntigravitySessionFromHook({
         indexPath: paths.antigravitySessionsPath,
         agent,
         payload
       });
+      if (normalizedEvent) {
+        localAgentReadiness?.observe({
+          event: normalizedEvent,
+          ...(authenticatedSessionId ? { authenticatedSessionId } : {})
+        });
+      }
     }
   });
 
+  const agentModelCatalog = createAgentModelCatalog({
+    contextKey: (agentId) =>
+      JSON.stringify(
+        resolveAgentScopeSettings(
+          runtime.getState().settings.agents,
+          "local"
+        )?.[agentId] ?? {}
+      ),
+    load: (agentId) =>
+      listBuiltinAgentModels({
+        agentId,
+        homeDir: userHomeDir,
+        env: resolvedShellEnv.baseEnv,
+        settings: resolveAgentScopeSettings(
+          runtime.getState().settings.agents,
+          "local"
+        )?.[agentId]
+      })
+  });
   registerIpcHandlers({
     getAgentCatalog: listBuiltinAgentDescriptors,
+    getAgentModelOptions: agentModelCatalog.list,
     getPlatformDescriptor: () => ({
       ...platformRuntime.rendererDescriptor,
       debugging: {
@@ -1541,6 +1796,19 @@ async function bootstrap(): Promise<void> {
     resumeExternalAgentSession: externalSessionResume.resume,
     createImageAttachments: imageAttachmentService.createImageAttachments,
     getUpdaterState: () => updater.getState(),
+    handleOrchestration: (request, principal) =>
+      requireOrchestration().handle(request, principal),
+    handleOrchestrationSkill: ({ method, params }) => {
+      if (method === "orchestration.skill.install") {
+        if (params.confirm !== true) {
+          throw new Error(
+            "orchestration skill installation requires confirmation"
+          );
+        }
+        return orchestrationSkillManager.installExplicit(params.agentIds);
+      }
+      return orchestrationSkillManager.inspect(params.agentIds);
+    },
     subscribeDocument: (sender, request) =>
       documentService.subscribe(sender, request),
     unsubscribeDocument: (sender, request) =>
@@ -2071,6 +2339,15 @@ async function bootstrap(): Promise<void> {
     if (!shutdownPromise) {
       shutdownPromise = (async () => {
         logDiagnostics("main.shutdown.begin", {});
+        try {
+          await orchestrationHost?.checkpointForShutdown();
+          await runtime.checkpointTerminalHistory();
+        } catch (error) {
+          console.error("[main:shutdown:orchestration-checkpoint]", error);
+          logDiagnostics("main.shutdown.orchestration-checkpoint-failed", {
+            message: error instanceof Error ? error.message : String(error)
+          });
+        }
         const autoInstallVersion = updater.prepareForShutdown();
         if (autoInstallVersion) {
           recordPendingLinuxUpdate(autoInstallVersion);
@@ -2098,6 +2375,7 @@ async function bootstrap(): Promise<void> {
         remoteHost = null;
         const remoteControl = remoteLifecycle;
         remoteLifecycle = null;
+        const stopLocalExecutions = async () => host?.stop();
 
         try {
           if (platformRuntime.platformId === "linux") {
@@ -2147,8 +2425,8 @@ async function bootstrap(): Promise<void> {
                 stop: () => server?.stop()
               },
               {
-                name: "pty-host",
-                stop: () => host?.stop()
+                name: "local-executions",
+                stop: stopLocalExecutions
               },
               {
                 name: "remote-runtime",
@@ -2193,7 +2471,7 @@ async function bootstrap(): Promise<void> {
 
             await diagnosticConfiguration;
             const socketStop = server?.stop();
-            const hostStop = host?.stop();
+            const hostStop = stopLocalExecutions();
             const remoteStop = remoteControl?.stop() ?? remote?.stop();
             const askpassStop = sshAskpass.stop();
             await Promise.all([socketStop, hostStop, remoteStop, askpassStop]);

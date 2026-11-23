@@ -1,0 +1,10 @@
+{
+  "validationCommand": "npm test",
+  "issue": "owner/repository#123",
+  "issueAgent": "codex",
+  "implementationAgent": "codex",
+  "reviewAgent": "antigravity",
+  "acceptanceCriteria": "요구한 동작과 기존 호환성을 확인하고 프로젝트 검증을 통과한다.",
+  "constraints": "기존 사용자 변경을 보존하고 요청 범위에만 작업한다.",
+  "reportDirectory": ""
+}

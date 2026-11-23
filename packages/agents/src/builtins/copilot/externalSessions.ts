@@ -14,6 +14,7 @@ import type {
   AgentExternalSessionMetadataProjection,
   AgentExternalSessionProjectionInput,
   AgentExternalSessionRecordProjection,
+  AgentSessionTranscriptCapability,
   AgentSessionSourceProjection,
   AgentSessionSourceProjectionInput
 } from "../../contracts";
@@ -27,6 +28,29 @@ import {
   classifyCopilotMetadataPath,
   copilotSessionIdFromPath
 } from "./inventory";
+
+export const copilotSessionTranscript: AgentSessionTranscriptCapability = {
+  matchesPath({ roots, path, sessionId }) {
+    return (
+      classifyCopilotMetadataPath(roots, path) === "copilot-session" &&
+      copilotSessionIdFromPath(path) === sessionId
+    );
+  },
+  decodeRecord(record) {
+    const event = asCoreHistoryObject(record);
+    if (
+      !event ||
+      event.agentId !== undefined ||
+      (event.type !== "user.message" && event.type !== "assistant.message")
+    )
+      return undefined;
+    const data = asCoreHistoryObject(event.data);
+    const text = typeof data?.content === "string" ? data.content : undefined;
+    return text
+      ? { role: event.type === "user.message" ? "user" : "assistant", text }
+      : undefined;
+  }
+};
 
 export function createCopilotExternalSessionProjection(): AgentExternalSessionMetadataProjection {
   const cache = createExternalSessionProjectionCache();

@@ -16,11 +16,15 @@ import {
   usageWatchIsRecursive
 } from "../shared";
 import {
+  claudeSessionTranscript,
   createClaudeExternalSessionProjection,
   createClaudeSessionSourceProjection
 } from "./externalSessions";
 import { classifyClaudeMetadataPath } from "./inventory";
 import { createClaudeUsageSourceProjection } from "./usage";
+import { createGlobalAgentSkillPlacement } from "../../skillPlacement";
+import { listClaudeModels } from "./models";
+import { classifyClaudeTerminalReadiness } from "./terminalReadiness";
 
 export const claudeAgent = Object.freeze({
   descriptor: {
@@ -29,8 +33,20 @@ export const claudeAgent = Object.freeze({
     aliases: [],
     presentation: { shortLabel: "CLAUDE" }
   },
-  definitionRevision: "claude-v2",
+  definitionRevision: "claude-v5",
   command: { executable: "claude" },
+  terminalReadiness: { classify: classifyClaudeTerminalReadiness },
+  launchPreferences: {
+    supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+    listModels: listClaudeModels,
+    buildArgs: (preferences) => [
+      ...(preferences.model ? ["--model", preferences.model] : []),
+      ...(preferences.effort ? ["--effort", preferences.effort] : [])
+    ]
+  },
+  skillPlacement: createGlobalAgentSkillPlacement({
+    defaultHomeRelativePath: ".claude"
+  }),
   resume: {
     build: (commonArgs, sessionId, options) => [
       ...commonArgs,
@@ -143,6 +159,7 @@ export const claudeAgent = Object.freeze({
     ]
   },
   sessions: {
+    transcript: claudeSessionTranscript,
     createMetadataProjection: createClaudeExternalSessionProjection,
     createSourceProjection: createClaudeSessionSourceProjection
   },

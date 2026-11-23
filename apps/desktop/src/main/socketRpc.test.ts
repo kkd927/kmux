@@ -261,3 +261,36 @@ describe("socket rpc parsing", () => {
     });
   });
 });
+
+it("accepts Workflow title invocation and typed caller completion but rejects forged attachment", () => {
+  const params = { workflow: "Review flow", runId: "run:review", inputs: {} };
+  expect(parseSocketRequest("workflow.run", params, "rpc:test")).toMatchObject({
+    params
+  });
+  expect(() =>
+    parseSocketRequest(
+      "workflow.run",
+      { ...params, callerAttachment: { sessionId: "forged" } },
+      "rpc:test"
+    )
+  ).toThrow(ZodError);
+  expect(() =>
+    parseSocketRequest(
+      "workflow.run",
+      { ...params, workflowVersionId: "other" },
+      "rpc:test"
+    )
+  ).toThrow(ZodError);
+  expect(
+    parseSocketRequest(
+      "workflow.caller.done",
+      {
+        runId: "run",
+        attemptId: "attempt",
+        requestId: "request",
+        result: { outcome: "succeeded", summary: "Done", data: { count: 0 } }
+      },
+      "rpc:test"
+    )
+  ).toMatchObject({ method: "workflow.caller.done" });
+});

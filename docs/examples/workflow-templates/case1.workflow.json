@@ -1,0 +1,982 @@
+{
+  "documentVersion": 1,
+  "workflow": {
+    "schemaVersion": 1,
+    "definitionId": "template:developer-1",
+    "version": 1,
+    "name": "1. 구현 → 독립 리뷰 → 수정·재리뷰",
+    "inputs": [
+      {
+        "id": "task",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "id": "acceptanceCriteria",
+        "required": false,
+        "schema": {
+          "schema": {
+            "type": "string"
+          }
+        },
+        "default": ""
+      },
+      {
+        "id": "constraints",
+        "required": false,
+        "schema": {
+          "schema": {
+            "type": "string"
+          }
+        },
+        "default": ""
+      },
+      {
+        "id": "validationCommand",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "id": "reportDirectory",
+        "required": false,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "pattern": "^(?:$|/)"
+          }
+        },
+        "default": ""
+      },
+      {
+        "id": "implementationAgent",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "id": "reviewAgent",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "id": "reviewResult",
+        "required": false,
+        "source": {
+          "kind": "node-result",
+          "nodeId": "review-loop"
+        }
+      },
+      {
+        "id": "planDecision",
+        "required": true,
+        "source": {
+          "kind": "node-result",
+          "nodeId": "approve-plan"
+        }
+      },
+      {
+        "id": "validation",
+        "required": false,
+        "source": {
+          "kind": "node-outcome",
+          "nodeId": "final-validation"
+        }
+      }
+    ],
+    "agentBindings": {
+      "implementationAgent": {
+        "agent": {
+          "kind": "run-input",
+          "inputId": "implementationAgent"
+        },
+        "scope": {
+          "kind": "run"
+        },
+        "authorityMode": "ambient",
+        "capabilities": [
+          "terminal"
+        ],
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      },
+      "reviewAgent": {
+        "agent": {
+          "kind": "run-input",
+          "inputId": "reviewAgent"
+        },
+        "scope": {
+          "kind": "run"
+        },
+        "authorityMode": "ambient",
+        "capabilities": [
+          "terminal"
+        ],
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      },
+      "reviewRound": {
+        "agent": {
+          "kind": "run-input",
+          "inputId": "reviewAgent"
+        },
+        "scope": {
+          "kind": "loop-iteration",
+          "loopNodeId": "review-loop"
+        },
+        "authorityMode": "ambient",
+        "capabilities": [
+          "terminal"
+        ],
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      },
+      "correctionRound": {
+        "agent": {
+          "kind": "run-input",
+          "inputId": "implementationAgent"
+        },
+        "scope": {
+          "kind": "loop-iteration",
+          "loopNodeId": "review-loop"
+        },
+        "authorityMode": "ambient",
+        "capabilities": [
+          "terminal"
+        ],
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      }
+    },
+    "policies": {
+      "limits": {
+        "maxNodes": 128,
+        "maxEdges": 512,
+        "maxGraphDepth": 32,
+        "maxFanOut": 16,
+        "maxLoopIterations": 12,
+        "maxActiveAttempts": 3,
+        "maxAttemptsPerSession": 8,
+        "maxDispatches": 128,
+        "maxCoordinatorTurns": 32,
+        "maxGraphPatches": 128,
+        "maxWallClockMs": 86400000,
+        "maxActiveExecutionMs": 43200000,
+        "maxArtifactBytes": 536870912,
+        "maxStructuredResultBytes": 8388608
+      },
+      "failure": "fail-run",
+      "cancellation": "cancel-active"
+    },
+    "description": "Approve an implementation plan, implement the supplied task, perform up to two corrections and a final independent review."
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "position": {
+        "x": 120,
+        "y": 452
+      },
+      "definition": {
+        "id": "start",
+        "kind": "start",
+        "title": "Start",
+        "config": {
+          "version": 1
+        }
+      }
+    },
+    {
+      "id": "plan",
+      "position": {
+        "x": 580,
+        "y": 271
+      },
+      "definition": {
+        "id": "plan",
+        "kind": "agent",
+        "title": "Plan the requested change",
+        "config": {
+          "version": 1,
+          "agentRef": "implementationAgent",
+          "prompt": "Read task and project context without editing source. Propose a bounded plan with affected areas, acceptance checks, dependencies and risks. Include the complete plan in the result so the local user can approve it.\n\nUse the resolved inputs and the project conventions in the assigned working directory. Preserve unrelated edits. Treat task, acceptanceCriteria and constraints as the scope; do not invent extra requirements. Execute validationCommand when this stage calls for validation and report exact commands and actual outcomes.\nReturn data matching the declared result schema. When it declares summary, data.summary must contain the complete useful plan, decisions or work result and executed checks needed by the next stage. Report work performed, findings, validation and remaining work in your explicit completion result. Include the full useful result, not just a terminal pointer or a report path. If reportDirectory is nonempty, write a unique report using this Run/Task identity to that user-supplied absolute directory outside the working tree and attach its path. Otherwise return the report in the completion result without inventing a filesystem location. Do not commit, push or publish unless the stage explicitly asks for a local commit or merge. For a blocker, ask the Coordinator or fail the Task truthfully.",
+          "lifecycleMode": "managed",
+          "coding": false
+        },
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "acceptanceCriteria",
+            "source": {
+              "kind": "run-input",
+              "inputId": "acceptanceCriteria"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "constraints",
+            "source": {
+              "kind": "run-input",
+              "inputId": "constraints"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validationCommand",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reportDirectory",
+            "source": {
+              "kind": "run-input",
+              "inputId": "reportDirectory"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "summary"
+            ],
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "approve-plan",
+      "position": {
+        "x": 1040,
+        "y": 452
+      },
+      "definition": {
+        "id": "approve-plan",
+        "kind": "human-gate",
+        "title": "Approve implementation plan",
+        "config": {
+          "version": 1,
+          "question": "Inspect the planning result and the supplied task. Approve the plan to begin implementation, or stop without changing source.",
+          "resolutions": [
+            "approve",
+            "stop"
+          ],
+          "approverPolicy": "local-user"
+        },
+        "inputMappings": [
+          {
+            "target": "plan",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "plan"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ]
+      }
+    },
+    {
+      "id": "implement",
+      "position": {
+        "x": 1500,
+        "y": 271
+      },
+      "definition": {
+        "id": "implement",
+        "kind": "agent",
+        "title": "Implement the approved task",
+        "config": {
+          "version": 1,
+          "agentRef": "implementationAgent",
+          "prompt": "Implement only the approved plan and the supplied task. Add or update meaningful tests, execute validationCommand and record the changes, checks and remaining issues.\n\nUse the resolved inputs and the project conventions in the assigned working directory. Preserve unrelated edits. Treat task, acceptanceCriteria and constraints as the scope; do not invent extra requirements. Execute validationCommand when this stage calls for validation and report exact commands and actual outcomes.\nReturn data matching the declared result schema. When it declares summary, data.summary must contain the complete useful plan, decisions or work result and executed checks needed by the next stage. Report work performed, findings, validation and remaining work in your explicit completion result. Include the full useful result, not just a terminal pointer or a report path. If reportDirectory is nonempty, write a unique report using this Run/Task identity to that user-supplied absolute directory outside the working tree and attach its path. Otherwise return the report in the completion result without inventing a filesystem location. Do not commit, push or publish unless the stage explicitly asks for a local commit or merge. For a blocker, ask the Coordinator or fail the Task truthfully.",
+          "lifecycleMode": "managed",
+          "coding": true
+        },
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "acceptanceCriteria",
+            "source": {
+              "kind": "run-input",
+              "inputId": "acceptanceCriteria"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "constraints",
+            "source": {
+              "kind": "run-input",
+              "inputId": "constraints"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validationCommand",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reportDirectory",
+            "source": {
+              "kind": "run-input",
+              "inputId": "reportDirectory"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "plan",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "plan"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "summary"
+            ],
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "final-validation",
+      "position": {
+        "x": 4172,
+        "y": 385
+      },
+      "definition": {
+        "id": "final-validation",
+        "kind": "shell",
+        "title": "Validate the reviewed result",
+        "inputMappings": [
+          {
+            "target": "command",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "config": {
+          "version": 1,
+          "command": {
+            "kind": "structured",
+            "executable": "/bin/sh",
+            "args": [
+              {
+                "kind": "literal",
+                "value": "-c"
+              },
+              {
+                "kind": "input",
+                "input": "command"
+              }
+            ]
+          },
+          "targetPolicy": "local",
+          "surfacePolicy": "create",
+          "cwdPolicy": "workspace",
+          "resultMode": "exit-code",
+          "maxOutputBytes": 1048576
+        }
+      }
+    },
+    {
+      "id": "review-loop",
+      "position": {
+        "x": 1960,
+        "y": 120
+      },
+      "definition": {
+        "id": "review-loop",
+        "kind": "loop",
+        "title": "Independent review · up to two fixes",
+        "config": {
+          "version": 1,
+          "mode": "while",
+          "maxIterations": 3,
+          "body": {
+            "nodeIds": [
+              "review",
+              "review-decision",
+              "fix-budget",
+              "correct",
+              "unresolved"
+            ],
+            "entryNodeIds": [
+              "review"
+            ],
+            "exits": [
+              {
+                "nodeId": "review-decision",
+                "port": "clean",
+                "outcome": "clean"
+              },
+              {
+                "nodeId": "correct",
+                "port": "success",
+                "outcome": "repeat"
+              },
+              {
+                "nodeId": "unresolved",
+                "outcome": "unresolved",
+                "action": "continue"
+              }
+            ]
+          },
+          "repeatOutcome": "repeat",
+          "completedOutcomes": [
+            "clean"
+          ],
+          "completedPort": "clean",
+          "maxReachedPort": "limit",
+          "carry": [
+            {
+              "inputId": "previousReview",
+              "initial": {
+                "kind": "literal",
+                "value": null
+              },
+              "next": {
+                "kind": "node-result",
+                "nodeId": "review"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "review",
+      "position": {
+        "x": 80,
+        "y": 171
+      },
+      "definition": {
+        "id": "review",
+        "kind": "agent",
+        "title": "Independent review",
+        "config": {
+          "version": 1,
+          "agentRef": "reviewRound",
+          "prompt": "Read-only review of the CURRENT changes against task, acceptanceCriteria, constraints and project conventions. Use implementation and previousReview from resolved inputs. Rerun every previous concrete reproduction after a correction, plus validationCommand. Do not implement fixes. Return data {findingsCount,findings}; each finding must include an actionable location, evidence and expected/actual behavior. Count all unresolved findings; failed required validation is a finding.\n\nUse the resolved inputs and the project conventions in the assigned working directory. Preserve unrelated edits. Treat task, acceptanceCriteria and constraints as the scope; do not invent extra requirements. Execute validationCommand when this stage calls for validation and report exact commands and actual outcomes.\nReturn data matching the declared result schema. When it declares summary, data.summary must contain the complete useful plan, decisions or work result and executed checks needed by the next stage. Report work performed, findings, validation and remaining work in your explicit completion result. Include the full useful result, not just a terminal pointer or a report path. If reportDirectory is nonempty, write a unique report using this Run/Task identity to that user-supplied absolute directory outside the working tree and attach its path. Otherwise return the report in the completion result without inventing a filesystem location. Do not commit, push or publish unless the stage explicitly asks for a local commit or merge. For a blocker, ask the Coordinator or fail the Task truthfully.",
+          "lifecycleMode": "managed",
+          "coding": false
+        },
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "acceptanceCriteria",
+            "source": {
+              "kind": "run-input",
+              "inputId": "acceptanceCriteria"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "constraints",
+            "source": {
+              "kind": "run-input",
+              "inputId": "constraints"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validationCommand",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reportDirectory",
+            "source": {
+              "kind": "run-input",
+              "inputId": "reportDirectory"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "implementation",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "implement"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "previousReview",
+            "source": {
+              "kind": "loop-carry",
+              "loopNodeId": "review-loop",
+              "inputId": "previousReview"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "findingsCount",
+              "findings"
+            ],
+            "properties": {
+              "findingsCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "findings": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "review-decision",
+      "position": {
+        "x": 512,
+        "y": 352
+      },
+      "definition": {
+        "id": "review-decision",
+        "kind": "condition",
+        "title": "Unresolved findings?",
+        "config": {
+          "version": 1,
+          "expressionVersion": 1,
+          "expression": "false",
+          "ports": [
+            "fix",
+            "clean"
+          ],
+          "conditions": [
+            {
+              "key": "fix",
+              "left": {
+                "kind": "node-result",
+                "nodeId": "review",
+                "path": [
+                  "findingsCount"
+                ]
+              },
+              "operator": "gt",
+              "right": {
+                "kind": "literal",
+                "value": 0
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fix-budget",
+      "position": {
+        "x": 944,
+        "y": 352
+      },
+      "definition": {
+        "id": "fix-budget",
+        "kind": "condition",
+        "title": "Fix budget remains?",
+        "config": {
+          "version": 1,
+          "expressionVersion": 1,
+          "expression": "false",
+          "ports": [
+            "fix",
+            "else"
+          ],
+          "conditions": [
+            {
+              "key": "fix",
+              "left": {
+                "kind": "loop-index",
+                "loopNodeId": "review-loop"
+              },
+              "operator": "lt",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "correct",
+      "position": {
+        "x": 1376,
+        "y": 120
+      },
+      "definition": {
+        "id": "correct",
+        "kind": "agent",
+        "title": "Apply confirmed review fixes",
+        "config": {
+          "version": 1,
+          "agentRef": "correctionRound",
+          "prompt": "Read the full resolved review. Fact-check its concrete findings against the CURRENT source, fix confirmed in-scope defects, add meaningful regression coverage and run validationCommand. Preserve unrelated changes and explain any finding that cannot be resolved. The independent reviewer will review the result again; do not substitute a self-review.\n\nUse the resolved inputs and the project conventions in the assigned working directory. Preserve unrelated edits. Treat task, acceptanceCriteria and constraints as the scope; do not invent extra requirements. Execute validationCommand when this stage calls for validation and report exact commands and actual outcomes.\nReturn data matching the declared result schema. When it declares summary, data.summary must contain the complete useful plan, decisions or work result and executed checks needed by the next stage. Report work performed, findings, validation and remaining work in your explicit completion result. Include the full useful result, not just a terminal pointer or a report path. If reportDirectory is nonempty, write a unique report using this Run/Task identity to that user-supplied absolute directory outside the working tree and attach its path. Otherwise return the report in the completion result without inventing a filesystem location. Do not commit, push or publish unless the stage explicitly asks for a local commit or merge. For a blocker, ask the Coordinator or fail the Task truthfully.",
+          "lifecycleMode": "managed",
+          "coding": true
+        },
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "acceptanceCriteria",
+            "source": {
+              "kind": "run-input",
+              "inputId": "acceptanceCriteria"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "constraints",
+            "source": {
+              "kind": "run-input",
+              "inputId": "constraints"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validationCommand",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reportDirectory",
+            "source": {
+              "kind": "run-input",
+              "inputId": "reportDirectory"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "review",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "review"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "summary"
+            ],
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "unresolved",
+      "position": {
+        "x": 1376,
+        "y": 584
+      },
+      "definition": {
+        "id": "unresolved",
+        "kind": "continue",
+        "title": "Final review still has findings",
+        "config": {
+          "version": 1
+        }
+      }
+    },
+    {
+      "id": "review-limit",
+      "position": {
+        "x": 4172,
+        "y": 1169
+      },
+      "definition": {
+        "id": "review-limit",
+        "kind": "human-gate",
+        "title": "Review budget exceeded",
+        "config": {
+          "version": 1,
+          "question": "Two correction rounds have been used and the final independent review still has findings. Inspect the review result and stop; stopping is not a clean review approval.",
+          "resolutions": [
+            "stop"
+          ],
+          "approverPolicy": "local-user"
+        }
+      }
+    },
+    {
+      "id": "done",
+      "position": {
+        "x": 4632,
+        "y": 452
+      },
+      "definition": {
+        "id": "done",
+        "kind": "end",
+        "title": "Finished / stopped",
+        "config": {
+          "version": 1
+        },
+        "completionRoot": true,
+        "joinPolicy": "any-successful",
+        "anySuccessfulDisposition": "wait"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "start:next:plan",
+      "from": {
+        "nodeId": "start"
+      },
+      "to": {
+        "nodeId": "plan"
+      }
+    },
+    {
+      "id": "plan:next:approve-plan",
+      "from": {
+        "nodeId": "plan"
+      },
+      "to": {
+        "nodeId": "approve-plan"
+      }
+    },
+    {
+      "id": "approve-plan:approve:implement",
+      "from": {
+        "nodeId": "approve-plan",
+        "port": "approve"
+      },
+      "to": {
+        "nodeId": "implement"
+      }
+    },
+    {
+      "id": "approve-plan:stop:done",
+      "from": {
+        "nodeId": "approve-plan",
+        "port": "stop"
+      },
+      "to": {
+        "nodeId": "done"
+      }
+    },
+    {
+      "id": "final-validation:next:done",
+      "from": {
+        "nodeId": "final-validation"
+      },
+      "to": {
+        "nodeId": "done"
+      }
+    },
+    {
+      "id": "implement:next:review-loop",
+      "from": {
+        "nodeId": "implement"
+      },
+      "to": {
+        "nodeId": "review-loop"
+      }
+    },
+    {
+      "id": "review:next:review-decision",
+      "from": {
+        "nodeId": "review"
+      },
+      "to": {
+        "nodeId": "review-decision"
+      }
+    },
+    {
+      "id": "review-decision:fix:fix-budget",
+      "from": {
+        "nodeId": "review-decision",
+        "port": "fix"
+      },
+      "to": {
+        "nodeId": "fix-budget"
+      }
+    },
+    {
+      "id": "fix-budget:fix:correct",
+      "from": {
+        "nodeId": "fix-budget",
+        "port": "fix"
+      },
+      "to": {
+        "nodeId": "correct"
+      }
+    },
+    {
+      "id": "fix-budget:else:unresolved",
+      "from": {
+        "nodeId": "fix-budget",
+        "port": "else"
+      },
+      "to": {
+        "nodeId": "unresolved"
+      }
+    },
+    {
+      "id": "review-loop:clean:final-validation",
+      "from": {
+        "nodeId": "review-loop",
+        "port": "clean"
+      },
+      "to": {
+        "nodeId": "final-validation"
+      }
+    },
+    {
+      "id": "review-loop:limit:review-limit",
+      "from": {
+        "nodeId": "review-loop",
+        "port": "limit"
+      },
+      "to": {
+        "nodeId": "review-limit"
+      }
+    },
+    {
+      "id": "review-limit:stop:done",
+      "from": {
+        "nodeId": "review-limit",
+        "port": "stop"
+      },
+      "to": {
+        "nodeId": "done"
+      }
+    }
+  ]
+}

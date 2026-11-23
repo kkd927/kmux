@@ -124,6 +124,8 @@ function registerTestHandlers(options: {
     readImages: () => CreateImageAttachmentPayload[];
     hasPasteableContent: () => boolean;
   };
+  handleOrchestration?: (...args: unknown[]) => Promise<unknown>;
+  handleOrchestrationSkill?: (...args: unknown[]) => Promise<unknown>;
 }): void {
   handlers.clear();
   registerIpcHandlers({
@@ -141,6 +143,8 @@ function registerTestHandlers(options: {
     getWorkspaceContextView: vi.fn(),
     getUsageView: vi.fn(),
     getUpdaterState: vi.fn(),
+    handleOrchestration: options.handleOrchestration as never,
+    handleOrchestrationSkill: options.handleOrchestrationSkill as never,
     subscribeDocument: vi.fn(),
     unsubscribeDocument: vi.fn(),
     dispatchRendererAction: options.dispatchRendererAction ?? vi.fn(),
@@ -288,6 +292,44 @@ function registerTestHandlers(options: {
 }
 
 describe("ipc handlers", () => {
+  it("exposes only schema-validated Workflow Studio methods to the trusted renderer", async () => {
+    const handleOrchestration = vi.fn(async () => ({
+      drafts: [],
+      versions: []
+    }));
+    registerTestHandlers({
+      snapshot: { updatedAt: "2026-08-26T00:00:00.000Z", sessions: [] },
+      resumeResult: { workspaceId: "workspace-1", surfaceId: "surface-1" },
+      handleOrchestration
+    });
+    const mainFrame = { detached: false, isDestroyed: () => false };
+    const event = {
+      senderFrame: mainFrame,
+      sender: { mainFrame }
+    } as unknown as IpcMainInvokeEvent;
+    const handler = handlers.get("kmux:orchestration")!;
+
+    await expect(
+      Promise.resolve(handler(event, { method: "workflow.list", params: {} }))
+    ).resolves.toEqual({ drafts: [], versions: [] });
+    expect(handleOrchestration).toHaveBeenCalledWith(
+      { method: "workflow.list", params: {} },
+      "user:local"
+    );
+    expect(() =>
+      handler(event, { method: "orchestration.worker.start", params: {} })
+    ).toThrow(/not exposed/u);
+    expect(() =>
+      handler(
+        {
+          senderFrame: { ...mainFrame },
+          sender: { mainFrame }
+        } as unknown as IpcMainInvokeEvent,
+        { method: "workflow.list", params: {} }
+      )
+    ).toThrow(/trusted main frame/u);
+  });
+
   it("accepts renderer dispatch only from the trusted main frame", async () => {
     const dispatchRendererAction = vi.fn(async () => undefined);
     registerTestHandlers({

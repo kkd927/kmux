@@ -11,6 +11,7 @@ directories:
 
 npmRebuild: false
 asarUnpack:
+  - "out/main/socket-peer"
   - "**/*.node"
   - "dist/pty-host/**"
   - "dist/remote-host/**"

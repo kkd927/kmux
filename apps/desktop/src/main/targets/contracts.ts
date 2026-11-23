@@ -3,6 +3,7 @@ import type {
   LocalPath,
   RemotePath,
   SessionLaunchConfig,
+  SurfacePlacementRequest,
   WorkspaceTarget
 } from "@kmux/core";
 import type {
@@ -28,6 +29,18 @@ export interface GitRepositoryInspection<TPath extends LocalPath | RemotePath> {
   dirtyEntries: string[];
   dirtyEntriesTruncated: boolean;
   branchExists?: boolean;
+}
+
+export interface GitRepositoryStateCapture<
+  TPath extends LocalPath | RemotePath | LocatedPath
+> {
+  readonly repositoryRoot: TPath;
+  readonly commonGitDir: TPath;
+  readonly headOid: string;
+  readonly indexTreeHash: string;
+  readonly changedPaths: readonly string[];
+  readonly dirtyPatch?: Uint8Array;
+  readonly untrackedManifest?: Uint8Array;
 }
 
 export type TargetMutationResult =
@@ -129,8 +142,9 @@ export interface TerminalControlProvider<TPath extends LocalPath | RemotePath> {
   create(request: {
     workspaceId: Id;
     paneId: Id;
+    placement?: SurfacePlacementRequest;
     launch: SessionLaunchConfig<TPath>;
-  }): Promise<void>;
+  }): Promise<{ readonly surfaceId: Id; readonly sessionId: Id }>;
   terminate(request: { operationId: Id; sessionId: Id }): Promise<void>;
   sendText(sessionId: Id, text: string): Promise<void>;
   sendKey(sessionId: Id, input: TerminalKeyInput): Promise<void>;
@@ -141,6 +155,19 @@ export interface GitProvider<TPath extends LocalPath | RemotePath> {
     cwd: TPath,
     options?: { dirtyLimit?: number; branch?: string }
   ): Promise<GitRepositoryInspection<TPath>>;
+  captureState?(
+    cwd: TPath,
+    options: { maxDirtyPatchBytes: number; maxUntrackedManifestBytes: number }
+  ): Promise<GitRepositoryStateCapture<TPath>>;
+  materializeState?(
+    cwd: TPath,
+    state: {
+      readonly headOid: string;
+      readonly indexTreeHash?: string;
+      readonly dirtyPatch?: Uint8Array;
+      readonly untrackedManifest?: Uint8Array;
+    }
+  ): Promise<void>;
   managedWorktreeRoot(): TPath;
   createWorktree(request: {
     workspaceId: Id;
@@ -274,7 +301,7 @@ export interface LocatedTargetServiceSet {
         env?: Record<string, string>;
         title?: string;
       };
-    }): Promise<void>;
+    }): Promise<{ readonly surfaceId: Id; readonly sessionId: Id }>;
     terminate(request: { operationId: Id; sessionId: Id }): Promise<void>;
     sendText(sessionId: Id, text: string): Promise<void>;
     sendKey(sessionId: Id, input: TerminalKeyInput): Promise<void>;
@@ -284,6 +311,19 @@ export interface LocatedTargetServiceSet {
       cwd: LocatedPath,
       options?: { dirtyLimit?: number; branch?: string }
     ): Promise<LocatedGitRepositoryInspection>;
+    captureState?(
+      cwd: LocatedPath,
+      options: { maxDirtyPatchBytes: number; maxUntrackedManifestBytes: number }
+    ): Promise<GitRepositoryStateCapture<LocatedPath>>;
+    materializeState?(
+      cwd: LocatedPath,
+      state: {
+        readonly headOid: string;
+        readonly indexTreeHash?: string;
+        readonly dirtyPatch?: Uint8Array;
+        readonly untrackedManifest?: Uint8Array;
+      }
+    ): Promise<void>;
     managedWorktreeRoot(): LocatedPath;
     createWorktree(request: {
       workspaceId: Id;

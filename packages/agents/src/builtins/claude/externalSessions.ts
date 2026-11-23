@@ -16,6 +16,7 @@ import type {
   AgentExternalSessionMetadataProjection,
   AgentExternalSessionProjectionInput,
   AgentExternalSessionRecordProjection,
+  AgentSessionTranscriptCapability,
   AgentSessionSourceProjection,
   AgentSessionSourceProjectionInput
 } from "../../contracts";
@@ -26,6 +27,29 @@ import {
   readJsonlEdges
 } from "../externalSessionShared";
 import { classifyClaudeMetadataPath } from "./inventory";
+
+export const claudeSessionTranscript: AgentSessionTranscriptCapability = {
+  matchesPath({ path, sessionId }) {
+    return (
+      classifyClaudeMetadataPath(path) === "claude-session" &&
+      (basename(path) === `${sessionId}.jsonl` ||
+        basename(path) === `${sessionId}.ndjson`)
+    );
+  },
+  decodeRecord(record) {
+    const event = asCoreHistoryObject(record);
+    if (
+      !event ||
+      event.isMeta ||
+      event.isSidechain ||
+      (event.type !== "user" && event.type !== "assistant")
+    )
+      return undefined;
+    const message = asCoreHistoryObject(event.message);
+    const text = extractClaudePromptText(message?.content);
+    return text ? { role: event.type, text } : undefined;
+  }
+};
 
 export function createClaudeExternalSessionProjection(): AgentExternalSessionMetadataProjection {
   const cache = createExternalSessionProjectionCache();

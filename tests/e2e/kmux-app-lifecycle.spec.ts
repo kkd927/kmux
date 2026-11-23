@@ -1,5 +1,7 @@
 import { terminalSurfaceVmContent } from "@kmux/proto";
 
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import process from "node:process";
 
 import { expect, test } from "@playwright/test";
@@ -345,6 +347,103 @@ test("explicit quit clears persisted notifications before the next relaunch", as
     if (relaunch) {
       await closeKmuxApp(relaunch).catch(() => {});
     }
+    destroySandbox(sandbox);
+  }
+});
+
+test("a damaged orchestration store preserves ordinary terminal use and its original bytes", async () => {
+  const sandbox = createSandbox("kmux-damaged-orchestration-");
+  const path = join(sandbox.stateDir, "orchestration.json");
+  writeFileSync(path, "incomplete");
+  const launched = await launchKmuxWithSandbox(sandbox);
+  try {
+    const view = await waitForView(
+      launched.page,
+      (view) =>
+        Object.values(view.activeWorkspace.surfaces).some(
+          (s) => terminalSurfaceVmContent(s)?.runtimeStatus === "running"
+        ),
+      "ordinary terminal is running"
+    );
+    const pane = view.activeWorkspace.panes[view.activeWorkspace.activePaneId];
+    await launched.page.evaluate(
+      (id) => window.kmux.sendText(id, "echo kmux-ready\r"),
+      pane.activeSurfaceId
+    );
+    await waitForSurfaceSnapshotContains(
+      launched.page,
+      pane.activeSurfaceId,
+      "kmux-ready"
+    );
+    await expect(
+      launched.page.evaluate(() =>
+        window.kmux.orchestration({ method: "workflow.list", params: {} })
+      )
+    ).rejects.toThrow(/Orchestration unavailable/);
+    expect(readFileSync(path, "utf8")).toBe("incomplete");
+  } finally {
+    await closeKmuxApp(launched);
+    destroySandbox(sandbox);
+  }
+});
+
+test("an interrupted managed command restores its display without launching another process", async () => {
+  const sandbox = createSandbox("kmux-interrupted-shell-");
+  const starts = join(sandbox.profileRoot, "starts.log");
+  let launched = await launchKmuxWithSandbox(sandbox);
+  try {
+    const initial = await waitForView(
+      launched.page,
+      (view) => view.workspaceRows.length > 0,
+      "workspace is ready"
+    );
+    await dispatch(launched.page, {
+      type: "settings.update",
+      patch: { restoreWorkspacesAfterQuit: true, warnBeforeQuit: false }
+    });
+    const created = await dispatch(launched.page, {
+      type: "surface.create",
+      paneId: initial.activeWorkspace.activePaneId,
+      launch: {
+        cwd: sandbox.profileRoot,
+        shell: "/bin/sh",
+        args: [
+          "-c",
+          'echo started >> "$1"; echo KMUX_HISTORY_ONLY; exec sleep 120',
+          "fixture",
+          starts
+        ],
+        env: {
+          KMUX_ORCHESTRATION_COMMAND_ID: "operation:interrupted",
+          KMUX_ORCHESTRATION_COMMAND_MAX_BYTES: "4096"
+        }
+      }
+    });
+    const id =
+      created.activeWorkspace.panes[created.activeWorkspace.activePaneId]
+        .activeSurfaceId;
+    await waitForSurfaceSnapshotContains(
+      launched.page,
+      id,
+      "KMUX_HISTORY_ONLY"
+    );
+    await closeKmuxApp(launched);
+    launched = await launchKmuxWithSandbox(sandbox);
+    await waitForView(
+      launched.page,
+      (view) =>
+        terminalSurfaceVmContent(view.activeWorkspace.surfaces[id])
+          ?.runtimeStatus === "exited",
+      "restored managed command is exited"
+    );
+    await waitForSurfaceSnapshotContains(
+      launched.page,
+      id,
+      "KMUX_HISTORY_ONLY"
+    );
+    expect(readFileSync(starts, "utf8")).toBe("started\n");
+  } finally {
+    await closeKmuxApp(launched).catch(() => {});
     destroySandbox(sandbox);
   }
 });

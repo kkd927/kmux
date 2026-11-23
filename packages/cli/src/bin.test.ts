@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 
 import { AGENT_HOOK_RPC_TIMEOUT_MS } from "@kmux/proto";
 import { afterEach, describe, expect, it } from "vitest";
@@ -61,6 +61,276 @@ describe("kmux cli socket path resolution", () => {
       ).toBe("/run/user/1000/kmux/control.sock");
     }
   });
+});
+
+describe("kmux native worker-start", () => {
+  it(
+    "starts a native Worker through the public Task contract and refuses invalid launch flags before RPC",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "kmux-worker-cli-"));
+      const socketPath = join(root, "control.sock");
+      const requests: { method: string; params: Record<string, unknown> }[] =
+        [];
+      const server = createServer((socket) => {
+        let buffer = "";
+        socket.on("data", (chunk) => {
+          buffer += chunk.toString();
+          if (!buffer.includes("\n")) return;
+          const request = JSON.parse(buffer.trim());
+          requests.push(request);
+          socket.end(
+            `${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { receiptId: "patch:worker" } })}\n`
+          );
+        });
+      });
+      server.listen(socketPath);
+      await once(server, "listening");
+      const cliEntry = fileURLToPath(new URL("./bin.ts", import.meta.url));
+      const baseArgs = [
+        "orchestration",
+        "worker-start",
+        "--run",
+        "run:existing",
+        "--spec",
+        "Review the coordinator analysis; do not modify files.",
+        "--agent",
+        "copilot",
+        "--no-coding",
+        "--request-id",
+        "start:review"
+      ];
+      const run = async (extra: string[], commandArgs: string[] = baseArgs) => {
+        const child = spawn(
+          process.execPath,
+          ["--import", "tsx", cliEntry, ...commandArgs, ...extra],
+          {
+            env: {
+              ...process.env,
+              KMUX_SOCKET_PATH: socketPath,
+              KMUX_AUTH_TOKEN: "fixture-session"
+            },
+            stdio: ["ignore", "pipe", "pipe"]
+          }
+        );
+        let stderr = "";
+        child.stdout.resume();
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk.toString();
+        });
+        const [code] = await once(child, "close");
+        return { code, stderr };
+      };
+      try {
+        expect(await run(["--model", "test-model", "--effort", "low"])).toEqual(
+          { code: 0, stderr: "" }
+        );
+        expect(requests).toHaveLength(1);
+        expect(requests[0]!.method).toBe("orchestration.worker.start");
+        const {
+          authToken,
+          callerPid: _callerPid,
+          ...params
+        } = requests[0]!.params;
+        expect(authToken).toBe("fixture-session");
+        expect(params).toMatchObject({
+          runId: "run:existing",
+          spec: "Review the coordinator analysis; do not modify files.",
+          agentId: "copilot",
+          coding: false,
+          allowParallelAgent: false,
+          preferences: { model: "test-model", effort: "low" },
+          requestId: "start:review"
+        });
+        expect((await run(["--effort", "low"])).code).not.toBe(0);
+        expect(
+          (
+            await run([
+              "--model",
+              "test-model",
+              "--terminal",
+              "surface:existing"
+            ])
+          ).code
+        ).not.toBe(0);
+        expect(requests).toHaveLength(1);
+
+        expect(
+          await run(
+            [],
+            [
+              "orchestration",
+              "worker-start",
+              "--run",
+              "run:existing",
+              "--task",
+              "task:review",
+              "--retry-of",
+              "dispatch:failed",
+              "--agent",
+              "copilot",
+              "--request-id",
+              "retry:review"
+            ]
+          )
+        ).toEqual({ code: 0, stderr: "" });
+        expect(requests).toHaveLength(2);
+        expect(requests[1]).toMatchObject({
+          method: "orchestration.worker.start",
+          params: {
+            runId: "run:existing",
+            taskId: "task:review",
+            retryDispatchId: "dispatch:failed",
+            agentId: "copilot",
+            allowParallelAgent: false,
+            requestId: "retry:review"
+          }
+        });
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    SPAWNED_CLI_TEST_TIMEOUT_MS
+  );
+});
+
+describe("kmux durable mailbox CLI", () => {
+  it(
+    "routes Worker check filters, escalation, and terminal-state inventory",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "kmux-mailbox-cli-"));
+      const socketPath = join(root, "control.sock");
+      const requests: { method: string; params: Record<string, unknown> }[] =
+        [];
+      const server = createServer((socket) => {
+        let buffer = "";
+        socket.on("data", (chunk) => {
+          buffer += chunk.toString();
+          if (!buffer.includes("\n")) return;
+          const request = JSON.parse(buffer.trim());
+          requests.push(request);
+          socket.end(
+            `${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { ok: true } })}\n`
+          );
+        });
+      });
+      server.listen(socketPath);
+      await once(server, "listening");
+      const cliEntry = fileURLToPath(new URL("./bin.ts", import.meta.url));
+      const run = async (args: string[]) => {
+        const child = spawn(
+          process.execPath,
+          ["--import", "tsx", cliEntry, "orchestration", ...args],
+          {
+            env: {
+              ...process.env,
+              KMUX_SOCKET_PATH: socketPath,
+              KMUX_AUTH_TOKEN: "fixture-session"
+            },
+            stdio: ["ignore", "pipe", "pipe"]
+          }
+        );
+        let stderr = "";
+        child.stdout.resume();
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk.toString();
+        });
+        const [code] = await once(child, "close");
+        return { code, stderr };
+      };
+      try {
+        expect(
+          await run([
+            "check",
+            "--dispatch",
+            "dispatch:1",
+            "--wait",
+            "--types",
+            "reply,guidance",
+            "--ack",
+            "delivery:1"
+          ])
+        ).toEqual({ code: 0, stderr: "" });
+        expect(requests[0]).toMatchObject({
+          method: "orchestration.inbox.check",
+          params: {
+            dispatchId: "dispatch:1",
+            wait: true,
+            types: ["reply", "guidance"],
+            ack: "delivery:1"
+          }
+        });
+        expect(
+          await run([
+            "escalate",
+            "--dispatch",
+            "dispatch:1",
+            "--text",
+            "blocked"
+          ])
+        ).toEqual({ code: 0, stderr: "" });
+        expect(requests[1]).toMatchObject({
+          method: "orchestration.message.escalate",
+          params: { dispatchId: "dispatch:1", text: "blocked" }
+        });
+        expect(
+          await run(["worker-list", "--terminal-state", "reclaimable"])
+        ).toEqual({ code: 0, stderr: "" });
+        expect(requests[2]).toMatchObject({
+          method: "orchestration.worker.list",
+          params: { terminalState: "reclaimable" }
+        });
+        expect(
+          (await run(["check", "--run", "run:1", "--dispatch", "dispatch:1"]))
+            .code
+        ).not.toBe(0);
+        const reportPath = "/tmp/review files/$(literal) `report`.md";
+        expect(
+          await run([
+            "worker-done",
+            "--task",
+            "task:1",
+            "--dispatch",
+            "dispatch:1",
+            "--outcome",
+            "succeeded",
+            "--summary",
+            "Reviewed; findings recorded; nothing remains.",
+            "--report-path",
+            reportPath
+          ])
+        ).toEqual({ code: 0, stderr: "" });
+        expect(requests[3]).toMatchObject({
+          method: "orchestration.worker.done",
+          params: { taskId: "task:1", dispatchId: "dispatch:1", reportPath }
+        });
+        expect(
+          await run([
+            "heartbeat",
+            "--task",
+            "task:1",
+            "--dispatch",
+            "dispatch:1",
+            "--phase",
+            "Reviewing sources"
+          ]).then((result) => result.code)
+        ).toBe(0);
+        expect(requests[4]).toMatchObject({
+          method: "orchestration.worker.heartbeat",
+          params: {
+            taskId: "task:1",
+            dispatchId: "dispatch:1",
+            phase: "Reviewing sources"
+          }
+        });
+        expect(requests).toHaveLength(5);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    SPAWNED_CLI_TEST_TIMEOUT_MS
+  );
 });
 
 describe("kmux cli agent hook forwarding", () => {
@@ -604,6 +874,117 @@ describe("kmux cli agent hook forwarding", () => {
       expect(exitCode).toBe(0);
       expect(JSON.parse(stdout)).toEqual({ decision: "allow" });
       expect(stderr).toBe("");
+    },
+    SPAWNED_CLI_TEST_TIMEOUT_MS
+  );
+});
+
+describe("saved Workflow CLI", () => {
+  it(
+    "invokes by title and submits a saved typed result from the caller contract",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "kmux-workflow-cli-"));
+      const socketPath = join(root, "control.sock");
+      const requests: Array<{
+        method: string;
+        params: Record<string, unknown>;
+      }> = [];
+      const server = createServer((socket) => {
+        let buffer = "";
+        socket.on("data", (chunk) => {
+          buffer += chunk.toString();
+          if (!buffer.includes("\n")) return;
+          const request = JSON.parse(buffer.trim());
+          requests.push(request);
+          socket.end(
+            `${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { runId: "run:test" } })}\n`
+          );
+        });
+      });
+      server.listen(socketPath);
+      await once(server, "listening");
+      const inputs = join(root, "inputs.json");
+      const resultFile = join(root, "result.json");
+      writeFileSync(inputs, JSON.stringify({ task: "Review" }));
+      const result = {
+        outcome: "succeeded",
+        summary: "Verified",
+        data: { remaining: 0 }
+      };
+      writeFileSync(resultFile, JSON.stringify(result));
+      const cli = fileURLToPath(new URL("./bin.ts", import.meta.url));
+      const run = async (args: string[]) => {
+        const child = spawn(
+          process.execPath,
+          ["--import", "tsx", cli, "workflow", ...args],
+          {
+            env: {
+              ...process.env,
+              KMUX_SOCKET_PATH: socketPath,
+              KMUX_AUTH_TOKEN: "caller-token"
+            },
+            stdio: ["ignore", "pipe", "pipe"]
+          }
+        );
+        child.stdout.resume();
+        let stderr = "";
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk.toString();
+        });
+        const [code] = await once(child, "close");
+        return { code, stderr };
+      };
+      try {
+        expect(
+          await run([
+            "run",
+            "--workflow",
+            "코드 리뷰 2회",
+            "--run",
+            "run:test",
+            "--inputs",
+            inputs
+          ])
+        ).toMatchObject({ code: 0 });
+        expect(requests[0]).toMatchObject({
+          method: "workflow.run",
+          params: {
+            workflow: "코드 리뷰 2회",
+            runId: "run:test",
+            inputs: { task: "Review" }
+          }
+        });
+        expect(
+          await run([
+            "caller-done",
+            "--run",
+            "run:test",
+            "--attempt",
+            "attempt:test",
+            "--request",
+            "request:test",
+            "--result",
+            resultFile
+          ])
+        ).toMatchObject({ code: 0 });
+        expect(requests[1]).toMatchObject({
+          method: "workflow.caller.done",
+          params: {
+            runId: "run:test",
+            attemptId: "attempt:test",
+            requestId: "request:test",
+            result
+          }
+        });
+        expect((await run(["run", "--version", "old-version"])).code).not.toBe(
+          0
+        );
+        expect(requests).toHaveLength(2);
+      } finally {
+        server.close();
+        await once(server, "close");
+        rmSync(root, { recursive: true, force: true });
+      }
     },
     SPAWNED_CLI_TEST_TIMEOUT_MS
   );

@@ -9,6 +9,11 @@ import { Command } from "commander";
 import type { Id, JsonRpcEnvelope } from "@kmux/proto";
 import { AGENT_HOOK_RPC_TIMEOUT_MS, makeId } from "@kmux/proto";
 import { generatedAgentHookResponse } from "@kmux/agents/generated-hook-responses";
+import {
+  LOCAL_V1_DEFAULT_RUN_LIMITS,
+  type AgentLaunchPreferences,
+  type JsonValue
+} from "@kmux/orchestration";
 
 import { resolveCliSocketPath } from "./socketPath";
 
@@ -17,7 +22,9 @@ const SOCKET_PATH = resolveCliSocketPath({ env });
 function sendRpc(
   method: string,
   params?: Record<string, unknown>,
-  options: { timeoutMs?: number } = {}
+  options: {
+    timeoutMs?: number;
+  } = {}
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const socket = new Socket();
@@ -83,11 +90,34 @@ function sendRpc(
     });
 
     socket.on("error", (error) => finish(error));
+    socket.on("close", () =>
+      finish(
+        new Error(
+          `Connection closed before ${method} completed; inspect durable state before retrying`
+        )
+      )
+    );
   });
 }
 
 function print(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function launchPreferencesFromCli(
+  options: { readonly model?: string; readonly effort?: string },
+  forceFresh = false
+): AgentLaunchPreferences | undefined {
+  if (options.effort && !options.model) {
+    throw new Error("--effort requires --model");
+  }
+  if (!options.model && !options.effort) {
+    return forceFresh ? {} : undefined;
+  }
+  return {
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.effort ? { effort: options.effort } : {})
+  };
 }
 
 function agentHookResponse(
@@ -115,6 +145,14 @@ function readJsonFromStdin(): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+function readJsonFile<T>(path: string): T {
+  const parsed = JSON.parse(readFileSync(path, "utf8"));
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Expected a JSON object in ${path}`);
+  }
+  return parsed as T;
+}
+
 async function runAgentHook(agent: string, hookEvent: string): Promise<void> {
   let outcome: "success" | "fallback" = "fallback";
   try {
@@ -140,7 +178,6 @@ async function runAgentHook(agent: string, hookEvent: string): Promise<void> {
 
 const program = new Command();
 program.name("kmux");
-
 const workspace = program.command("workspace");
 workspace
   .command("list")
@@ -400,7 +437,620 @@ system
   .command("identify")
   .action(async () => print(await sendRpc("system.identify")));
 
-program.parseAsync().catch((error: Error) => {
+const orchestration = program.command("orchestration");
+orchestration
+  .command("run-create")
+  .description("Create and select a local orchestration Run")
+  .requiredOption("--objective <objective>")
+  .option("--run <runId>")
+  .action(async (options: { objective: string; run?: string }) => {
+    const runId = options.run ?? makeId("run");
+    print(
+      await sendRpc("orchestration.run.create", {
+        runId,
+        objective: options.objective,
+        inputs: {},
+        limits: LOCAL_V1_DEFAULT_RUN_LIMITS,
+        idempotencyKey: makeId("create-run")
+      })
+    );
+  });
+orchestration
+  .command("run-use")
+  .requiredOption("--run <runId>")
+  .action(async (options: { run: string }) =>
+    print(await sendRpc("orchestration.run.use", { runId: options.run }))
+  );
+orchestration
+  .command("run-current")
+  .action(async () => print(await sendRpc("orchestration.run.current")));
+orchestration
+  .command("task-create")
+  .requiredOption("--spec <spec>")
+  .option("--task <taskId>")
+  .option("--title <title>")
+  .option("--run <runId>")
+  .option("--depends <taskIds>", "comma-separated Task IDs")
+  .action(
+    async (options: {
+      spec: string;
+      task?: string;
+      title?: string;
+      run?: string;
+      depends?: string;
+    }) =>
+      print(
+        await sendRpc("orchestration.task.create", {
+          ...(options.run ? { runId: options.run } : {}),
+          taskId: options.task ?? makeId("task"),
+          spec: options.spec,
+          ...(options.title ? { title: options.title } : {}),
+          dependencies: options.depends
+            ? options.depends
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean)
+            : [],
+          requestId: makeId("task-create")
+        })
+      )
+  );
+orchestration
+  .command("task-list")
+  .option("--run <runId>")
+  .action(async (options: { run?: string }) =>
+    print(
+      await sendRpc("orchestration.task.list", {
+        ...(options.run ? { runId: options.run } : {})
+      })
+    )
+  );
+orchestration
+  .command("worker-start")
+  .description("Create or dispatch a Task to a native Agent terminal")
+  .option("--spec <spec>", "create and dispatch a Task in one call")
+  .option("--task <taskId>", "dispatch an existing Task")
+  .requiredOption("--agent <agentId>", "Agent catalog ID")
+  .option("--run <runId>")
+  .option("--title <title>")
+  .option("--no-coding", "mark the Task as read-only guidance")
+  .option(
+    "--worktree <placement>",
+    "current, new-child, or new-top-level; omit on retry/reuse"
+  )
+  .option("--reuse <dispatchId>", "reuse this exact settled Worker session")
+  .option("--retry-of <dispatchId>", "retry this exact failed Dispatch")
+  .option(
+    "--allow-parallel-agent",
+    "explicitly allow another Worker using the same Agent in this Run"
+  )
+  .option("--request-id <requestId>", "idempotent start request ID")
+  .option("--model <model>", "opaque provider model identifier")
+  .option("--effort <effort>", "opaque provider reasoning effort")
+  .action(
+    async (options: {
+      spec?: string;
+      task?: string;
+      agent: string;
+      run?: string;
+      title?: string;
+      coding: boolean;
+      worktree?: string;
+      reuse?: string;
+      retryOf?: string;
+      allowParallelAgent?: boolean;
+      requestId?: string;
+      model?: string;
+      effort?: string;
+    }) => {
+      if (Boolean(options.spec) === Boolean(options.task)) {
+        throw new Error(
+          "worker-start requires exactly one of --spec or --task"
+        );
+      }
+      if (options.retryOf && !options.task) {
+        throw new Error("--retry-of requires --task");
+      }
+      if (options.retryOf && options.reuse) {
+        throw new Error("--retry-of cannot be combined with --reuse");
+      }
+      print(
+        await sendRpc(
+          "orchestration.worker.start",
+          {
+            ...(options.run ? { runId: options.run } : {}),
+            ...(options.spec ? { spec: options.spec } : {}),
+            ...(options.task ? { taskId: options.task } : {}),
+            ...(options.title ? { title: options.title } : {}),
+            agentId: options.agent,
+            coding: options.coding,
+            ...(options.worktree ? { worktree: options.worktree } : {}),
+            ...(options.reuse ? { reuseDispatchId: options.reuse } : {}),
+            ...(options.retryOf ? { retryDispatchId: options.retryOf } : {}),
+            allowParallelAgent: options.allowParallelAgent ?? false,
+            preferences: launchPreferencesFromCli(options, true) ?? {},
+            requestId: options.requestId ?? makeId("worker-start")
+          },
+          { timeoutMs: 75_000 }
+        )
+      );
+    }
+  );
+orchestration
+  .command("gate-create")
+  .description(
+    "Dispatch a pending decision Task as a Human Gate; dependent Tasks wait for the user choice"
+  )
+  .requiredOption("--task <taskId>")
+  .requiredOption("--question <question>")
+  .requiredOption("--options <json>", "JSON array of allowed resolutions")
+  .option("--run <runId>")
+  .option("--request-id <requestId>")
+  .action(
+    async (options: {
+      task: string;
+      question: string;
+      options: string;
+      run?: string;
+      requestId?: string;
+    }) => {
+      print(
+        await sendRpc("orchestration.gate.create", {
+          ...(options.run ? { runId: options.run } : {}),
+          taskId: options.task,
+          question: options.question,
+          options: JSON.parse(options.options),
+          requestId: options.requestId ?? makeId("gate-create")
+        })
+      );
+    }
+  );
+orchestration
+  .command("gate-list")
+  .option("--run <runId>")
+  .option("--task <taskId>")
+  .option("--state <state>", "open, resolved, or canceled")
+  .action(async (options: { run?: string; task?: string; state?: string }) =>
+    print(
+      await sendRpc("orchestration.gate.list", {
+        ...(options.run ? { runId: options.run } : {}),
+        ...(options.task ? { taskId: options.task } : {}),
+        ...(options.state ? { state: options.state } : {})
+      })
+    )
+  );
+orchestration
+  .command("worker-list")
+  .option("--run <runId>")
+  .option(
+    "--terminal-state <state>",
+    "active, reclaimable, retained, release-pending, release-unknown, or released"
+  )
+  .action(async (options: { run?: string; terminalState?: string }) =>
+    print(
+      await sendRpc("orchestration.worker.list", {
+        ...(options.run ? { runId: options.run } : {}),
+        ...(options.terminalState
+          ? { terminalState: options.terminalState }
+          : {})
+      })
+    )
+  );
+orchestration
+  .command("worker-show")
+  .requiredOption("--dispatch <dispatchId>")
+  .action(async (options: { dispatch: string }) =>
+    print(
+      await sendRpc("orchestration.worker.show", {
+        dispatchId: options.dispatch
+      })
+    )
+  );
+orchestration
+  .command("worker-read")
+  .description("read live or preserved Worker transcript or terminal output")
+  .requiredOption("--dispatch <dispatchId>")
+  .option("--lines <lines>", "output lines", "200")
+  .option("--max-bytes <bytes>", "output byte limit", "1048576")
+  .action(
+    async (options: { dispatch: string; lines: string; maxBytes: string }) =>
+      print(
+        await sendRpc("orchestration.worker.read", {
+          dispatchId: options.dispatch,
+          lines: Number(options.lines),
+          maxBytes: Number(options.maxBytes)
+        })
+      )
+  );
+orchestration
+  .command("worker-stop")
+  .requiredOption("--dispatch <dispatchId>")
+  .action(async (options: { dispatch: string }) => {
+    const worker = (await sendRpc("orchestration.worker.show", {
+      dispatchId: options.dispatch
+    })) as { attemptId: string };
+    print(
+      await sendRpc("orchestration.attempt.cancel", {
+        attemptId: worker.attemptId,
+        idempotencyKey: makeId("worker-stop")
+      })
+    );
+  });
+orchestration
+  .command("worker-recover")
+  .requiredOption("--dispatch <dispatchId>")
+  .requiredOption("--resolution <resolution>")
+  .requiredOption("--summary <summary>")
+  .action(
+    async (options: {
+      dispatch: string;
+      resolution: string;
+      summary: string;
+    }) => {
+      const worker = (await sendRpc("orchestration.worker.show", {
+        dispatchId: options.dispatch
+      })) as { attemptId: string };
+      print(
+        await sendRpc("orchestration.attempt.recover", {
+          attemptId: worker.attemptId,
+          resolution: options.resolution,
+          summary: options.summary
+        })
+      );
+    }
+  );
+orchestration
+  .command("send")
+  .requiredOption("--dispatch <dispatchId>")
+  .requiredOption("--text <text>")
+  .option("--run <runId>")
+  .action(async (options: { dispatch: string; text: string; run?: string }) =>
+    print(
+      await sendRpc("orchestration.message.send", {
+        ...(options.run ? { runId: options.run } : {}),
+        dispatchId: options.dispatch,
+        kind: "guidance",
+        text: options.text
+      })
+    )
+  );
+orchestration
+  .command("ask")
+  .requiredOption("--dispatch <dispatchId>")
+  .requiredOption("--text <text>")
+  .action(async (options: { dispatch: string; text: string }) =>
+    print(
+      await sendRpc("orchestration.message.ask", {
+        dispatchId: options.dispatch,
+        text: options.text
+      })
+    )
+  );
+orchestration
+  .command("escalate")
+  .requiredOption("--dispatch <dispatchId>")
+  .requiredOption("--text <text>")
+  .action(async (options: { dispatch: string; text: string }) =>
+    print(
+      await sendRpc("orchestration.message.escalate", {
+        dispatchId: options.dispatch,
+        text: options.text
+      })
+    )
+  );
+orchestration
+  .command("worker-done")
+  .requiredOption("--task <taskId>")
+  .requiredOption("--dispatch <dispatchId>")
+  .requiredOption("--outcome <outcome>")
+  .requiredOption("--summary <summary>")
+  .option("--report-path <path>", "optional durable report path")
+  .option("--data <json>", "optional structured result JSON")
+  .action(
+    async (options: {
+      task: string;
+      dispatch: string;
+      outcome: string;
+      summary: string;
+      reportPath?: string;
+      data?: string;
+    }) => {
+      if (!["succeeded", "failed", "canceled"].includes(options.outcome)) {
+        throw new Error("--outcome must be succeeded, failed, or canceled");
+      }
+      print(
+        await sendRpc("orchestration.worker.done", {
+          taskId: options.task,
+          dispatchId: options.dispatch,
+          outcome: options.outcome,
+          summary: options.summary,
+          ...(options.reportPath ? { reportPath: options.reportPath } : {}),
+          ...(options.data ? { data: JSON.parse(options.data) } : {})
+        })
+      );
+    }
+  );
+orchestration
+  .command("heartbeat")
+  .requiredOption("--task <taskId>")
+  .requiredOption("--dispatch <dispatchId>")
+  .requiredOption("--phase <phase>")
+  .action(async (options: { task: string; dispatch: string; phase: string }) =>
+    print(
+      await sendRpc("orchestration.worker.heartbeat", {
+        taskId: options.task,
+        dispatchId: options.dispatch,
+        phase: options.phase
+      })
+    )
+  );
+orchestration
+  .command("check")
+  .description("Receive or wait for one durable mailbox Delivery")
+  .option("--run <runId>")
+  .option("--dispatch <dispatchId>")
+  .option("--wait", "wait for a durable inbox delivery")
+  .option("--ack <deliveryId>", "acknowledge a processed delivery")
+  .option(
+    "--types <csv>",
+    "wake for selected event types without skipping earlier FIFO events"
+  )
+  .option(
+    "--summary <text>",
+    "record the assessment of the acknowledged delivery"
+  )
+  .option(
+    "--timeout-ms <milliseconds>",
+    "bounded wait, up to 60000 ms",
+    "30000"
+  )
+  .action(
+    async (options: {
+      run?: string;
+      dispatch?: string;
+      wait?: boolean;
+      ack?: string;
+      summary?: string;
+      types?: string;
+      timeoutMs: string;
+    }) => {
+      if (options.run && options.dispatch) {
+        throw new Error("--run and --dispatch are mutually exclusive");
+      }
+      const timeoutMs = Number(options.timeoutMs);
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 60_000)
+        throw new Error("--timeout-ms must be between 0 and 60000");
+      const types = options.types
+        ?.split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+      const knownTypes = new Set([
+        "caller_task",
+        "worker_done",
+        "question",
+        "escalation",
+        "guidance",
+        "reply"
+      ]);
+      if (types?.some((type) => !knownTypes.has(type))) {
+        throw new Error("--types contains an unsupported mailbox event type");
+      }
+      print(
+        await sendRpc(
+          "orchestration.inbox.check",
+          {
+            ...(options.run ? { runId: options.run } : {}),
+            ...(options.dispatch ? { dispatchId: options.dispatch } : {}),
+            wait: options.wait ?? false,
+            timeoutMs,
+            ...(options.ack ? { ack: options.ack } : {}),
+            ...(options.summary ? { summary: options.summary } : {}),
+            ...(types && types.length > 0 ? { types } : {})
+          },
+          { timeoutMs: timeoutMs + 10_000 }
+        )
+      );
+    }
+  );
+orchestration
+  .command("reply")
+  .requiredOption("--dispatch <dispatchId>")
+  .requiredOption("--reply-to <messageId>")
+  .requiredOption("--text <text>")
+  .option("--run <runId>")
+  .action(
+    async (options: {
+      run?: string;
+      dispatch: string;
+      replyTo: string;
+      text: string;
+    }) =>
+      print(
+        await sendRpc("orchestration.message.send", {
+          ...(options.run ? { runId: options.run } : {}),
+          dispatchId: options.dispatch,
+          kind: "reply",
+          replyToMessageId: options.replyTo,
+          text: options.text
+        })
+      )
+  );
+for (const disposition of ["retain", "release"] as const) {
+  orchestration
+    .command(`worker-${disposition}`)
+    .requiredOption("--dispatch <dispatchId>")
+    .description(
+      disposition === "retain"
+        ? "Retain the exact Runtime-owned Agent terminal after settlement"
+        : "Release the exact Runtime-owned Agent terminal after settlement"
+    )
+    .action(async (options: { dispatch: string }) => {
+      const worker = (await sendRpc("orchestration.worker.show", {
+        dispatchId: options.dispatch
+      })) as { attemptId: string };
+      print(
+        await sendRpc("orchestration.input.disposition", {
+          attemptId: worker.attemptId,
+          disposition,
+          idempotencyKey: makeId(`input-${disposition}`)
+        })
+      );
+    });
+}
+
+const orchestrationSkill = orchestration.command("skill");
+orchestrationSkill
+  .command("status")
+  .requiredOption("--agents <agentIds>", "comma-separated Agent IDs")
+  .action(async (options: { agents: string }) =>
+    print(
+      await sendRpc("orchestration.skill.status", {
+        agentIds: options.agents.split(",").map((value) => value.trim())
+      })
+    )
+  );
+const workflow = program.command("workflow");
+workflow
+  .command("list")
+  .action(async () => print(await sendRpc("workflow.list")));
+workflow
+  .command("create")
+  .requiredOption("--name <name>")
+  .option("--draft <draftId>")
+  .option("--definition <definitionId>")
+  .option("--canonical <canonicalFile>")
+  .option("--editor <editorFile>")
+  .action(
+    async (options: {
+      name: string;
+      draft?: string;
+      definition?: string;
+      canonical?: string;
+      editor?: string;
+    }) =>
+      print(
+        await sendRpc("workflow.draft.create", {
+          draftId: options.draft ?? makeId("workflow-draft"),
+          definitionId: options.definition ?? makeId("workflow-definition"),
+          name: options.name,
+          ...(options.canonical
+            ? { canonicalDraft: readJsonFile<JsonValue>(options.canonical) }
+            : {}),
+          ...(options.editor
+            ? { editorDocument: readJsonFile<JsonValue>(options.editor) }
+            : {})
+        })
+      )
+  );
+workflow
+  .command("show")
+  .requiredOption("--draft <draftId>")
+  .action(async (options: { draft: string }) =>
+    print(await sendRpc("workflow.draft.get", { draftId: options.draft }))
+  );
+workflow
+  .command("update")
+  .requiredOption("--draft <draftId>")
+  .requiredOption("--expected-revision <revision>")
+  .requiredOption("--canonical <canonicalFile>")
+  .requiredOption("--editor <editorFile>")
+  .action(
+    async (options: {
+      draft: string;
+      expectedRevision: string;
+      canonical: string;
+      editor: string;
+    }) =>
+      print(
+        await sendRpc("workflow.draft.update", {
+          draftId: options.draft,
+          expectedRevision: Number(options.expectedRevision),
+          canonicalDraft: readJsonFile<JsonValue>(options.canonical),
+          editorDocument: readJsonFile<JsonValue>(options.editor)
+        })
+      )
+  );
+workflow
+  .command("delete")
+  .requiredOption("--draft <draftId>")
+  .requiredOption("--expected-revision <revision>")
+  .action(async (options: { draft: string; expectedRevision: string }) =>
+    print(
+      await sendRpc("workflow.draft.delete", {
+        draftId: options.draft,
+        expectedRevision: Number(options.expectedRevision)
+      })
+    )
+  );
+workflow
+  .command("validate")
+  .requiredOption("--draft <draftId>")
+  .action(async (options: { draft: string }) =>
+    print(await sendRpc("workflow.draft.validate", { draftId: options.draft }))
+  );
+workflow
+  .command("publish")
+  .requiredOption("--draft <draftId>")
+  .requiredOption("--expected-revision <revision>")
+  .action(async (options: { draft: string; expectedRevision: string }) =>
+    print(
+      await sendRpc("workflow.publish", {
+        draftId: options.draft,
+        expectedRevision: Number(options.expectedRevision)
+      })
+    )
+  );
+workflow
+  .command("run")
+  .requiredOption("--workflow <titleOrDefinitionId>")
+  .option("--run <runId>")
+  .option("--inputs <inputsFile>")
+  .action(
+    async (options: { workflow: string; run?: string; inputs?: string }) => {
+      print(
+        await sendRpc("workflow.run", {
+          workflow: options.workflow,
+          runId: options.run ?? makeId("run"),
+          inputs: options.inputs
+            ? readJsonFile<Record<string, JsonValue>>(options.inputs)
+            : {}
+        })
+      );
+    }
+  );
+
+workflow
+  .command("caller-done")
+  .description("Complete a task received by the existing calling Agent")
+  .requiredOption("--run <runId>")
+  .requiredOption("--attempt <attemptId>")
+  .requiredOption("--request <requestId>")
+  .requiredOption(
+    "--result <resultFile>",
+    "JSON with outcome, summary and declared structured data"
+  )
+  .action(
+    async (options: {
+      run: string;
+      attempt: string;
+      request: string;
+      result: string;
+    }) => {
+      print(
+        await sendRpc("workflow.caller.done", {
+          runId: options.run,
+          attemptId: options.attempt,
+          requestId: options.request,
+          result: readJsonFile(options.result)
+        })
+      );
+    }
+  );
+
+// The desktop bundle also launches this CLI with Electron's executable under
+// ELECTRON_RUN_AS_NODE. Commander otherwise applies its Electron argv mode and
+// consumes a real kmux subcommand as the application path.
+program.parseAsync(process.argv, { from: "node" }).catch((error: Error) => {
   process.stderr.write(`${error.message}\n`);
   process.exitCode = 1;
 });

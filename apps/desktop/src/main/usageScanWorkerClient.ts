@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import type {
   ExternalSessionIndexer,
+  AgentSessionTranscriptReadResult,
   ExternalSessionResumeSpec
 } from "@kmux/agents";
 import type {
@@ -47,6 +48,12 @@ export interface UsageScanService {
 
 export interface AgentMetadataScanService extends UsageScanService {
   readonly sessions: ExternalSessionIndexer;
+  readSessionTranscript(input: {
+    readonly agentId: string;
+    readonly sessionId: string;
+    readonly dispatchMarker?: string;
+    readonly maxBytes?: number;
+  }): Promise<AgentSessionTranscriptReadResult>;
   updateAgentSettings(agentSettings?: AgentScopeSettings): Promise<void>;
 }
 
@@ -481,6 +488,25 @@ export function createUsageScanWorkerClient(
   }
 
   const service: AgentMetadataScanService = {
+    async readSessionTranscript(input) {
+      await agentSettingsReady;
+      return enqueueOperation(async () => {
+        await ensureWorker();
+        if (!child)
+          throw new Error("agent metadata scan worker is unavailable");
+        const message = await sendRequest(
+          child,
+          { ...input, type: "session-transcript", requestId: randomUUID() },
+          requestTimeoutMs
+        );
+        if (message.type !== "session-transcript-result") {
+          throw new Error(
+            "agent metadata scan worker returned an invalid transcript response"
+          );
+        }
+        return message.result;
+      });
+    },
     watch(onChange) {
       listeners.add(onChange);
       return () => {

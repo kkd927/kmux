@@ -1,0 +1,832 @@
+{
+  "documentVersion": 1,
+  "workflow": {
+    "schemaVersion": 1,
+    "definitionId": "workflow-definition:ac2ba69c-0d56-477f-a107-529979b3532d",
+    "version": 1,
+    "name": "코드 리뷰 · 수정 2회 후 최종 검증",
+    "inputs": [
+      {
+        "id": "task",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "id": "implementationResult",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "object",
+            "required": ["summary", "changedFiles", "tests"],
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "changedFiles": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tests": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "id": "reviewResult",
+        "required": true,
+        "source": {
+          "kind": "node-result",
+          "nodeId": "loop:6b2b2949"
+        }
+      }
+    ],
+    "agentBindings": {
+      "agent-agent:7ff05886": {
+        "agent": {
+          "kind": "agent-id",
+          "agentId": "codex"
+        },
+        "scope": {
+          "kind": "loop-iteration",
+          "loopNodeId": "loop:6b2b2949"
+        },
+        "authorityMode": "ambient",
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      },
+      "agent-agent:2957d79f": {
+        "agent": {
+          "kind": "agent-id",
+          "agentId": "antigravity"
+        },
+        "scope": {
+          "kind": "loop-iteration",
+          "loopNodeId": "loop:6b2b2949"
+        },
+        "authorityMode": "ambient",
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      },
+      "calling-agent": {
+        "agent": {
+          "kind": "caller"
+        },
+        "scope": {
+          "kind": "run"
+        },
+        "authorityMode": "ambient",
+        "targetPolicy": "local",
+        "surfacePolicy": "create-or-reuse",
+        "sessionPolicy": "reuse",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      }
+    },
+    "policies": {
+      "limits": {
+        "maxNodes": 128,
+        "maxEdges": 512,
+        "maxGraphDepth": 32,
+        "maxFanOut": 16,
+        "maxLoopIterations": 3,
+        "maxActiveAttempts": 4,
+        "maxAttemptsPerSession": 8,
+        "maxDispatches": 128,
+        "maxCoordinatorTurns": 32,
+        "maxGraphPatches": 128,
+        "maxWallClockMs": 86400000,
+        "maxActiveExecutionMs": 43200000,
+        "maxArtifactBytes": 536870912,
+        "maxStructuredResultBytes": 8388608
+      },
+      "failure": "fail-run",
+      "cancellation": "cancel-active"
+    }
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "position": {
+        "x": 80,
+        "y": 460
+      },
+      "definition": {
+        "id": "start",
+        "kind": "start",
+        "title": "Start",
+        "config": {
+          "version": 1
+        }
+      }
+    },
+    {
+      "id": "loop:6b2b2949",
+      "position": {
+        "x": 330,
+        "y": -350
+      },
+      "definition": {
+        "id": "loop:6b2b2949",
+        "kind": "loop",
+        "title": "Review · up to 2 rounds",
+        "config": {
+          "version": 1,
+          "mode": "while",
+          "maxIterations": 3,
+          "body": {
+            "nodeIds": [
+              "agent:7ff05886",
+              "agent:2957d79f",
+              "condition:1ba49c50",
+              "agent:revise",
+              "break:clean",
+              "condition:fix-budget",
+              "continue:unresolved"
+            ],
+            "entryNodeIds": ["agent:7ff05886", "agent:2957d79f"],
+            "exits": [
+              {
+                "nodeId": "break:clean",
+                "outcome": "clean",
+                "action": "break"
+              },
+              {
+                "nodeId": "agent:revise",
+                "outcome": "continue",
+                "action": "continue"
+              },
+              {
+                "nodeId": "continue:unresolved",
+                "outcome": "unresolved",
+                "action": "continue"
+              }
+            ]
+          },
+          "repeatOutcome": "continue",
+          "completedOutcomes": ["clean"],
+          "completedPort": "completed",
+          "maxReachedPort": "max-reached",
+          "loopOutputs": [
+            {
+              "name": "codexReviews",
+              "source": {
+                "kind": "node-result",
+                "nodeId": "agent:7ff05886"
+              },
+              "mode": "collect"
+            },
+            {
+              "name": "antigravityReviews",
+              "source": {
+                "kind": "node-result",
+                "nodeId": "agent:2957d79f"
+              },
+              "mode": "collect"
+            },
+            {
+              "name": "revisionOutcomes",
+              "source": {
+                "kind": "node-outcome",
+                "nodeId": "agent:revise"
+              },
+              "mode": "collect"
+            }
+          ]
+        }
+      },
+      "size": {
+        "width": 2020,
+        "height": 1650
+      },
+      "loopAnchors": {
+        "start": {
+          "x": 24,
+          "y": 700
+        },
+        "end": {
+          "x": 1930,
+          "y": 700
+        }
+      }
+    },
+    {
+      "id": "agent:7ff05886",
+      "position": {
+        "x": 155,
+        "y": 130
+      },
+      "definition": {
+        "id": "agent:7ff05886",
+        "kind": "agent",
+        "title": "Codex review",
+        "joinPolicy": "all-successful",
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "implementationResult",
+            "source": {
+              "kind": "run-input",
+              "inputId": "implementationResult"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "iteration",
+            "source": {
+              "kind": "loop-index",
+              "loopNodeId": "loop:6b2b2949"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": ["blockerCount", "blockers", "review"],
+            "additionalProperties": false,
+            "properties": {
+              "blockerCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "blockers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["title", "file", "evidence", "reasoning"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "title": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "file": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "evidence": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "reasoning": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              },
+              "review": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "blockerCount": {
+                      "const": 0
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "blockers": {
+                      "maxItems": 0
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "blockers": {
+                      "minItems": 1
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "config": {
+          "version": 1,
+          "agentRef": "agent-agent:7ff05886",
+          "prompt": "Review the original calling Agent’s completed work in the current working tree. Inputs contain task, implementationResult and iteration (zero based). Inspect the actual current files and diff on EVERY round, including any changes made after the prior review. Do not edit files or delegate. Identify only release-blocking correctness, security or data-loss problems. Verify each finding against current source and provide a concrete file and evidence. Return structured data exactly matching resultSchema: blockerCount must equal blockers.length; review must contain the full review, including non-blocking observations. A failed or incomplete review is not a clean review. Save any report outside the repository, then submit the required explicit worker-done with data before becoming idle.",
+          "lifecycleMode": "managed",
+          "coding": false,
+          "launch": {
+            "model": "gpt-6-luna",
+            "effort": "xhigh"
+          }
+        },
+        "onFailure": "fail-run",
+        "onCancel": "fail-run"
+      }
+    },
+    {
+      "id": "agent:2957d79f",
+      "position": {
+        "x": 155,
+        "y": 850
+      },
+      "definition": {
+        "id": "agent:2957d79f",
+        "kind": "agent",
+        "title": "Antigravity review",
+        "joinPolicy": "all-successful",
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "implementationResult",
+            "source": {
+              "kind": "run-input",
+              "inputId": "implementationResult"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "iteration",
+            "source": {
+              "kind": "loop-index",
+              "loopNodeId": "loop:6b2b2949"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": ["blockerCount", "blockers", "review"],
+            "additionalProperties": false,
+            "properties": {
+              "blockerCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "blockers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["title", "file", "evidence", "reasoning"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "title": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "file": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "evidence": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "reasoning": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              },
+              "review": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "blockerCount": {
+                      "const": 0
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "blockers": {
+                      "maxItems": 0
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "blockers": {
+                      "minItems": 1
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "config": {
+          "version": 1,
+          "agentRef": "agent-agent:2957d79f",
+          "prompt": "Review the original calling Agent’s completed work in the current working tree. Inputs contain task, implementationResult and iteration (zero based). Inspect the actual current files and diff on EVERY round, including any changes made after the prior review. Do not edit files or delegate. Identify only release-blocking correctness, security or data-loss problems. Verify each finding against current source and provide a concrete file and evidence. Return structured data exactly matching resultSchema: blockerCount must equal blockers.length; review must contain the full review, including non-blocking observations. A failed or incomplete review is not a clean review. Save any report outside the repository, then submit the required explicit worker-done with data before becoming idle.",
+          "lifecycleMode": "managed",
+          "coding": false,
+          "launch": {
+            "model": "gemini-3.8-flash",
+            "effort": "high"
+          }
+        },
+        "onFailure": "fail-run",
+        "onCancel": "fail-run"
+      }
+    },
+    {
+      "id": "condition:1ba49c50",
+      "position": {
+        "x": 715,
+        "y": 640
+      },
+      "definition": {
+        "id": "condition:1ba49c50",
+        "kind": "condition",
+        "title": "Any blocker?",
+        "joinPolicy": "all-successful",
+        "config": {
+          "version": 1,
+          "expressionVersion": 1,
+          "expression": "false",
+          "conditions": [
+            {
+              "key": "if_1",
+              "left": {
+                "kind": "node-result",
+                "nodeId": "agent:7ff05886",
+                "path": ["blockerCount"]
+              },
+              "operator": "gt",
+              "right": {
+                "kind": "literal",
+                "value": 0
+              }
+            },
+            {
+              "key": "if_2",
+              "left": {
+                "kind": "node-result",
+                "nodeId": "agent:2957d79f",
+                "path": ["blockerCount"]
+              },
+              "operator": "gt",
+              "right": {
+                "kind": "literal",
+                "value": 0
+              }
+            }
+          ],
+          "ports": ["if_1", "if_2", "else"]
+        }
+      }
+    },
+    {
+      "id": "agent:revise",
+      "position": {
+        "x": 1190,
+        "y": 690
+      },
+      "definition": {
+        "id": "agent:revise",
+        "kind": "agent",
+        "title": "Fact-check and revise",
+        "joinPolicy": "all-successful",
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "implementationResult",
+            "source": {
+              "kind": "run-input",
+              "inputId": "implementationResult"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "iteration",
+            "source": {
+              "kind": "loop-index",
+              "loopNodeId": "loop:6b2b2949"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "codexReview",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "agent:7ff05886"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "antigravityReview",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "agent:2957d79f"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": ["factCheck", "changes", "tests", "remainingBlockers"],
+            "additionalProperties": false,
+            "properties": {
+              "factCheck": {
+                "type": "string",
+                "minLength": 1
+              },
+              "changes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "tests": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "remainingBlockers": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "config": {
+          "version": 1,
+          "agentRef": "calling-agent",
+          "prompt": "You are the original working Agent in your existing conversation. Read BOTH full reviews from inputs, inspect the current source, fact-check every blocker and deduplicate overlapping findings. Explain dismissed findings with evidence. Fix only confirmed problems while preserving unrelated changes and run the relevant checks. Do not start additional reviewers, recursively invoke this Workflow, or change its graph. Submit explicit completion with outcome, summary and data matching resultSchema using workflow caller-done for this exact Run, attempt and request. At most two fixes are allowed. Every fix is followed by a fresh independent review; after the second fix the final review may report unresolved blockers, which require user judgment rather than another fix.",
+          "lifecycleMode": "managed",
+          "coding": true
+        },
+        "onFailure": "fail-run",
+        "onCancel": "fail-run"
+      }
+    },
+    {
+      "id": "break:clean",
+      "position": {
+        "x": 1705,
+        "y": 280
+      },
+      "definition": {
+        "id": "break:clean",
+        "kind": "break",
+        "title": "Break · no blockers",
+        "config": {
+          "version": 1
+        }
+      }
+    },
+    {
+      "id": "end",
+      "position": {
+        "x": 2420,
+        "y": 460
+      },
+      "definition": {
+        "id": "end",
+        "kind": "end",
+        "title": "End",
+        "completionRoot": true,
+        "joinPolicy": "all-successful",
+        "config": {
+          "version": 1
+        }
+      }
+    },
+    {
+      "id": "condition:fix-budget",
+      "position": {
+        "x": 950,
+        "y": 740
+      },
+      "definition": {
+        "id": "condition:fix-budget",
+        "kind": "condition",
+        "title": "Fix budget remains?",
+        "config": {
+          "version": 1,
+          "expressionVersion": 1,
+          "expression": "false",
+          "conditions": [
+            {
+              "key": "fix",
+              "left": {
+                "kind": "loop-index",
+                "loopNodeId": "loop:6b2b2949"
+              },
+              "operator": "lt",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            }
+          ],
+          "ports": ["fix", "else"]
+        },
+        "joinPolicy": "all-successful"
+      }
+    },
+    {
+      "id": "continue:unresolved",
+      "position": {
+        "x": 1705,
+        "y": 1040
+      },
+      "definition": {
+        "id": "continue:unresolved",
+        "kind": "continue",
+        "title": "Final review still has blockers",
+        "config": {
+          "version": 1
+        }
+      }
+    },
+    {
+      "id": "gate:unresolved",
+      "position": {
+        "x": 2240,
+        "y": 900
+      },
+      "definition": {
+        "id": "gate:unresolved",
+        "kind": "human-gate",
+        "title": "Unresolved final review",
+        "config": {
+          "version": 1,
+          "question": "Final independent review still has blockers after two fixes. Stop and inspect the attached reviews; no further fix is authorized by this Workflow.",
+          "resolutions": ["stop"],
+          "approverPolicy": "local-user"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "start:default:loop:6b2b2949",
+      "from": {
+        "nodeId": "start"
+      },
+      "to": {
+        "nodeId": "loop:6b2b2949"
+      }
+    },
+    {
+      "id": "loop:6b2b2949:completed:end",
+      "from": {
+        "nodeId": "loop:6b2b2949",
+        "port": "completed"
+      },
+      "to": {
+        "nodeId": "end"
+      }
+    },
+    {
+      "id": "loop:max-reached:gate-unresolved",
+      "from": {
+        "nodeId": "loop:6b2b2949",
+        "port": "max-reached"
+      },
+      "to": {
+        "nodeId": "gate:unresolved"
+      }
+    },
+    {
+      "id": "agent:7ff05886:default:condition:1ba49c50",
+      "from": {
+        "nodeId": "agent:7ff05886"
+      },
+      "to": {
+        "nodeId": "condition:1ba49c50"
+      }
+    },
+    {
+      "id": "agent:2957d79f:default:condition:1ba49c50",
+      "from": {
+        "nodeId": "agent:2957d79f"
+      },
+      "to": {
+        "nodeId": "condition:1ba49c50"
+      }
+    },
+    {
+      "id": "condition:1ba49c50:if_1:condition:fix-budget",
+      "from": {
+        "nodeId": "condition:1ba49c50",
+        "port": "if_1"
+      },
+      "to": {
+        "nodeId": "condition:fix-budget"
+      }
+    },
+    {
+      "id": "condition:1ba49c50:if_2:condition:fix-budget",
+      "from": {
+        "nodeId": "condition:1ba49c50",
+        "port": "if_2"
+      },
+      "to": {
+        "nodeId": "condition:fix-budget"
+      }
+    },
+    {
+      "id": "condition:1ba49c50:else:break:clean",
+      "from": {
+        "nodeId": "condition:1ba49c50",
+        "port": "else"
+      },
+      "to": {
+        "nodeId": "break:clean"
+      }
+    },
+    {
+      "id": "fix-budget:fix:revise",
+      "from": {
+        "nodeId": "condition:fix-budget",
+        "port": "fix"
+      },
+      "to": {
+        "nodeId": "agent:revise"
+      }
+    },
+    {
+      "id": "fix-budget:else:unresolved",
+      "from": {
+        "nodeId": "condition:fix-budget",
+        "port": "else"
+      },
+      "to": {
+        "nodeId": "continue:unresolved"
+      }
+    },
+    {
+      "id": "unresolved:stop:end",
+      "from": {
+        "nodeId": "gate:unresolved",
+        "port": "stop"
+      },
+      "to": {
+        "nodeId": "end"
+      }
+    }
+  ]
+}

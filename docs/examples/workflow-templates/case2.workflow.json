@@ -1,0 +1,840 @@
+{
+  "documentVersion": 1,
+  "workflow": {
+    "schemaVersion": 1,
+    "definitionId": "template:developer-2",
+    "version": 1,
+    "name": "2. 병렬 조사·설계 → 구현·검증",
+    "inputs": [
+      {
+        "id": "task",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "id": "acceptanceCriteria",
+        "required": false,
+        "schema": {
+          "schema": {
+            "type": "string"
+          }
+        },
+        "default": ""
+      },
+      {
+        "id": "constraints",
+        "required": false,
+        "schema": {
+          "schema": {
+            "type": "string"
+          }
+        },
+        "default": ""
+      },
+      {
+        "id": "validationCommand",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "id": "reportDirectory",
+        "required": false,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "pattern": "^(?:$|/)"
+          }
+        },
+        "default": ""
+      },
+      {
+        "id": "researchAgent",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "id": "designAgent",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "id": "implementationAgent",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "id": "verificationAgent",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "id": "verification",
+        "required": false,
+        "source": {
+          "kind": "node-result",
+          "nodeId": "verify"
+        }
+      },
+      {
+        "id": "validation",
+        "required": false,
+        "source": {
+          "kind": "node-outcome",
+          "nodeId": "final-validation"
+        }
+      }
+    ],
+    "agentBindings": {
+      "researchAgent": {
+        "agent": {
+          "kind": "run-input",
+          "inputId": "researchAgent"
+        },
+        "scope": {
+          "kind": "run"
+        },
+        "authorityMode": "ambient",
+        "capabilities": [
+          "terminal"
+        ],
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      },
+      "designAgent": {
+        "agent": {
+          "kind": "run-input",
+          "inputId": "designAgent"
+        },
+        "scope": {
+          "kind": "run"
+        },
+        "authorityMode": "ambient",
+        "capabilities": [
+          "terminal"
+        ],
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      },
+      "implementationAgent": {
+        "agent": {
+          "kind": "run-input",
+          "inputId": "implementationAgent"
+        },
+        "scope": {
+          "kind": "run"
+        },
+        "authorityMode": "ambient",
+        "capabilities": [
+          "terminal"
+        ],
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      },
+      "verificationAgent": {
+        "agent": {
+          "kind": "run-input",
+          "inputId": "verificationAgent"
+        },
+        "scope": {
+          "kind": "run"
+        },
+        "authorityMode": "ambient",
+        "capabilities": [
+          "terminal"
+        ],
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      }
+    },
+    "policies": {
+      "limits": {
+        "maxNodes": 128,
+        "maxEdges": 512,
+        "maxGraphDepth": 32,
+        "maxFanOut": 16,
+        "maxLoopIterations": 12,
+        "maxActiveAttempts": 3,
+        "maxAttemptsPerSession": 8,
+        "maxDispatches": 128,
+        "maxCoordinatorTurns": 32,
+        "maxGraphPatches": 128,
+        "maxWallClockMs": 86400000,
+        "maxActiveExecutionMs": 43200000,
+        "maxArtifactBytes": 536870912,
+        "maxStructuredResultBytes": 8388608
+      },
+      "failure": "fail-run",
+      "cancellation": "cancel-active"
+    },
+    "description": "Research and design run concurrently; implementation waits for and receives both complete results."
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "position": {
+        "x": 120,
+        "y": 549
+      },
+      "definition": {
+        "id": "start",
+        "kind": "start",
+        "title": "Start",
+        "config": {
+          "version": 1
+        }
+      }
+    },
+    {
+      "id": "research",
+      "position": {
+        "x": 580,
+        "y": 120
+      },
+      "definition": {
+        "id": "research",
+        "kind": "agent",
+        "title": "Research project constraints",
+        "config": {
+          "version": 1,
+          "agentRef": "researchAgent",
+          "prompt": "Read-only investigate the supplied task, existing project behavior, relevant APIs, dependencies and risks. Provide concrete findings and recommendations for the implementer. Include the useful evidence in the completion result.\n\nUse the resolved inputs and the project conventions in the assigned working directory. Preserve unrelated edits. Treat task, acceptanceCriteria and constraints as the scope; do not invent extra requirements. Execute validationCommand when this stage calls for validation and report exact commands and actual outcomes.\nReturn data matching the declared result schema. When it declares summary, data.summary must contain the complete useful plan, decisions or work result and executed checks needed by the next stage. Report work performed, findings, validation and remaining work in your explicit completion result. Include the full useful result, not just a terminal pointer or a report path. If reportDirectory is nonempty, write a unique report using this Run/Task identity to that user-supplied absolute directory outside the working tree and attach its path. Otherwise return the report in the completion result without inventing a filesystem location. Do not commit, push or publish unless the stage explicitly asks for a local commit or merge. For a blocker, ask the Coordinator or fail the Task truthfully.",
+          "lifecycleMode": "managed",
+          "coding": false
+        },
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "acceptanceCriteria",
+            "source": {
+              "kind": "run-input",
+              "inputId": "acceptanceCriteria"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "constraints",
+            "source": {
+              "kind": "run-input",
+              "inputId": "constraints"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validationCommand",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reportDirectory",
+            "source": {
+              "kind": "run-input",
+              "inputId": "reportDirectory"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "summary"
+            ],
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "design",
+      "position": {
+        "x": 580,
+        "y": 616
+      },
+      "definition": {
+        "id": "design",
+        "kind": "agent",
+        "title": "Design implementation and checks",
+        "config": {
+          "version": 1,
+          "agentRef": "designAgent",
+          "prompt": "Read-only design an implementation approach, interfaces, ownership boundaries and acceptance checks for the supplied task. Document assumptions rather than invent requirements. Include the complete useful design in the result.\n\nUse the resolved inputs and the project conventions in the assigned working directory. Preserve unrelated edits. Treat task, acceptanceCriteria and constraints as the scope; do not invent extra requirements. Execute validationCommand when this stage calls for validation and report exact commands and actual outcomes.\nReturn data matching the declared result schema. When it declares summary, data.summary must contain the complete useful plan, decisions or work result and executed checks needed by the next stage. Report work performed, findings, validation and remaining work in your explicit completion result. Include the full useful result, not just a terminal pointer or a report path. If reportDirectory is nonempty, write a unique report using this Run/Task identity to that user-supplied absolute directory outside the working tree and attach its path. Otherwise return the report in the completion result without inventing a filesystem location. Do not commit, push or publish unless the stage explicitly asks for a local commit or merge. For a blocker, ask the Coordinator or fail the Task truthfully.",
+          "lifecycleMode": "managed",
+          "coding": false
+        },
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "acceptanceCriteria",
+            "source": {
+              "kind": "run-input",
+              "inputId": "acceptanceCriteria"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "constraints",
+            "source": {
+              "kind": "run-input",
+              "inputId": "constraints"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validationCommand",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reportDirectory",
+            "source": {
+              "kind": "run-input",
+              "inputId": "reportDirectory"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "summary"
+            ],
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "implement",
+      "position": {
+        "x": 1040,
+        "y": 368
+      },
+      "definition": {
+        "id": "implement",
+        "kind": "agent",
+        "title": "Implement both upstream decisions",
+        "config": {
+          "version": 1,
+          "agentRef": "implementationAgent",
+          "prompt": "Wait for and read BOTH research and design from resolved inputs. Resolve conflicts against task and project evidence, implement the agreed scope, and run validationCommand. Explain how each upstream result informed the work.\n\nUse the resolved inputs and the project conventions in the assigned working directory. Preserve unrelated edits. Treat task, acceptanceCriteria and constraints as the scope; do not invent extra requirements. Execute validationCommand when this stage calls for validation and report exact commands and actual outcomes.\nReturn data matching the declared result schema. When it declares summary, data.summary must contain the complete useful plan, decisions or work result and executed checks needed by the next stage. Report work performed, findings, validation and remaining work in your explicit completion result. Include the full useful result, not just a terminal pointer or a report path. If reportDirectory is nonempty, write a unique report using this Run/Task identity to that user-supplied absolute directory outside the working tree and attach its path. Otherwise return the report in the completion result without inventing a filesystem location. Do not commit, push or publish unless the stage explicitly asks for a local commit or merge. For a blocker, ask the Coordinator or fail the Task truthfully.",
+          "lifecycleMode": "managed",
+          "coding": true
+        },
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "acceptanceCriteria",
+            "source": {
+              "kind": "run-input",
+              "inputId": "acceptanceCriteria"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "constraints",
+            "source": {
+              "kind": "run-input",
+              "inputId": "constraints"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validationCommand",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reportDirectory",
+            "source": {
+              "kind": "run-input",
+              "inputId": "reportDirectory"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "research",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "research"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "design",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "design"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "summary"
+            ],
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "joinPolicy": "all-successful"
+      }
+    },
+    {
+      "id": "verify",
+      "position": {
+        "x": 1500,
+        "y": 368
+      },
+      "definition": {
+        "id": "verify",
+        "kind": "agent",
+        "title": "Independent verification",
+        "config": {
+          "version": 1,
+          "agentRef": "verificationAgent",
+          "prompt": "Independently verify the CURRENT implementation against task and acceptanceCriteria, upstream results and the actual changed code. Run validationCommand and relevant contract checks. Return data {passed,checks,issues}. Set passed=false for any failed check or unresolved required criterion; use a failed Task outcome for an operational blocker.\n\nUse the resolved inputs and the project conventions in the assigned working directory. Preserve unrelated edits. Treat task, acceptanceCriteria and constraints as the scope; do not invent extra requirements. Execute validationCommand when this stage calls for validation and report exact commands and actual outcomes.\nReturn data matching the declared result schema. When it declares summary, data.summary must contain the complete useful plan, decisions or work result and executed checks needed by the next stage. Report work performed, findings, validation and remaining work in your explicit completion result. Include the full useful result, not just a terminal pointer or a report path. If reportDirectory is nonempty, write a unique report using this Run/Task identity to that user-supplied absolute directory outside the working tree and attach its path. Otherwise return the report in the completion result without inventing a filesystem location. Do not commit, push or publish unless the stage explicitly asks for a local commit or merge. For a blocker, ask the Coordinator or fail the Task truthfully.",
+          "lifecycleMode": "managed",
+          "coding": false
+        },
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "acceptanceCriteria",
+            "source": {
+              "kind": "run-input",
+              "inputId": "acceptanceCriteria"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "constraints",
+            "source": {
+              "kind": "run-input",
+              "inputId": "constraints"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validationCommand",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reportDirectory",
+            "source": {
+              "kind": "run-input",
+              "inputId": "reportDirectory"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "research",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "research"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "design",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "design"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "implementation",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "implement"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "passed",
+              "checks",
+              "issues"
+            ],
+            "properties": {
+              "passed": {
+                "type": "boolean"
+              },
+              "checks": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "issues": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "verification-passed",
+      "position": {
+        "x": 1960,
+        "y": 549
+      },
+      "definition": {
+        "id": "verification-passed",
+        "kind": "condition",
+        "title": "Verification passed?",
+        "config": {
+          "version": 1,
+          "expressionVersion": 1,
+          "expression": "false",
+          "ports": [
+            "yes",
+            "else"
+          ],
+          "conditions": [
+            {
+              "key": "yes",
+              "left": {
+                "kind": "node-result",
+                "nodeId": "verify",
+                "path": [
+                  "passed"
+                ]
+              },
+              "operator": "eq",
+              "right": {
+                "kind": "literal",
+                "value": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "final-validation",
+      "position": {
+        "x": 2420,
+        "y": 482
+      },
+      "definition": {
+        "id": "final-validation",
+        "kind": "shell",
+        "title": "Run project validation",
+        "inputMappings": [
+          {
+            "target": "command",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "config": {
+          "version": 1,
+          "command": {
+            "kind": "structured",
+            "executable": "/bin/sh",
+            "args": [
+              {
+                "kind": "literal",
+                "value": "-c"
+              },
+              {
+                "kind": "input",
+                "input": "command"
+              }
+            ]
+          },
+          "targetPolicy": "local",
+          "surfacePolicy": "create",
+          "cwdPolicy": "workspace",
+          "resultMode": "exit-code",
+          "maxOutputBytes": 1048576
+        }
+      }
+    },
+    {
+      "id": "verification-stop",
+      "position": {
+        "x": 2420,
+        "y": 616
+      },
+      "definition": {
+        "id": "verification-stop",
+        "kind": "human-gate",
+        "title": "Verification requires attention",
+        "config": {
+          "version": 1,
+          "question": "Verification reported unresolved issues. Inspect its full result. Stop this run and address the problem; this decision does not approve the implementation.",
+          "resolutions": [
+            "stop"
+          ],
+          "approverPolicy": "local-user"
+        },
+        "inputMappings": [
+          {
+            "target": "verification",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "verify"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ]
+      }
+    },
+    {
+      "id": "done",
+      "position": {
+        "x": 2880,
+        "y": 549
+      },
+      "definition": {
+        "id": "done",
+        "kind": "end",
+        "title": "Finished / stopped",
+        "config": {
+          "version": 1
+        },
+        "completionRoot": true,
+        "joinPolicy": "any-successful",
+        "anySuccessfulDisposition": "wait"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "start:next:research",
+      "from": {
+        "nodeId": "start"
+      },
+      "to": {
+        "nodeId": "research"
+      }
+    },
+    {
+      "id": "start:next:design",
+      "from": {
+        "nodeId": "start"
+      },
+      "to": {
+        "nodeId": "design"
+      }
+    },
+    {
+      "id": "research:next:implement",
+      "from": {
+        "nodeId": "research"
+      },
+      "to": {
+        "nodeId": "implement"
+      }
+    },
+    {
+      "id": "design:next:implement",
+      "from": {
+        "nodeId": "design"
+      },
+      "to": {
+        "nodeId": "implement"
+      }
+    },
+    {
+      "id": "implement:next:verify",
+      "from": {
+        "nodeId": "implement"
+      },
+      "to": {
+        "nodeId": "verify"
+      }
+    },
+    {
+      "id": "verify:next:verification-passed",
+      "from": {
+        "nodeId": "verify"
+      },
+      "to": {
+        "nodeId": "verification-passed"
+      }
+    },
+    {
+      "id": "verification-passed:yes:final-validation",
+      "from": {
+        "nodeId": "verification-passed",
+        "port": "yes"
+      },
+      "to": {
+        "nodeId": "final-validation"
+      }
+    },
+    {
+      "id": "verification-passed:else:verification-stop",
+      "from": {
+        "nodeId": "verification-passed",
+        "port": "else"
+      },
+      "to": {
+        "nodeId": "verification-stop"
+      }
+    },
+    {
+      "id": "final-validation:next:done",
+      "from": {
+        "nodeId": "final-validation"
+      },
+      "to": {
+        "nodeId": "done"
+      }
+    },
+    {
+      "id": "verification-stop:stop:done",
+      "from": {
+        "nodeId": "verification-stop",
+        "port": "stop"
+      },
+      "to": {
+        "nodeId": "done"
+      }
+    }
+  ]
+}

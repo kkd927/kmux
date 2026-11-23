@@ -272,6 +272,22 @@ function toDescriptorDto(module: AgentModule): AgentDescriptorDto {
     capabilities: AGENT_CAPABILITY_KEYS.filter(
       (key) => capabilityFor(module, key) !== undefined
     ),
+    ...(module.launchPreferences
+      ? {
+          launchPreferences: {
+            model: "opaque-provider-id" as const,
+            efforts: [...module.launchPreferences.supportedEfforts],
+            effortRequiresModel: true as const
+          }
+        }
+      : {}),
+    ...(module.skillPlacement
+      ? {
+          skillPlacement: {
+            scopes: [...module.skillPlacement.supportedScopes]
+          }
+        }
+      : {}),
     ...(module.descriptor.presentation
       ? { presentation: { ...module.descriptor.presentation } }
       : {})

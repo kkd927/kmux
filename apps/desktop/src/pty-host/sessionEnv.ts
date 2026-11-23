@@ -19,14 +19,10 @@ export interface BuildSessionEnvInput {
   options?: BuildSessionEnvOptions;
 }
 
-export function buildSessionEnv(input: BuildSessionEnvInput): NodeJS.ProcessEnv {
-  const {
-    baseEnv,
-    launchEnv,
-    hookEnv,
-    sessionEnv,
-    options = {}
-  } = input;
+export function buildSessionEnv(
+  input: BuildSessionEnvInput
+): NodeJS.ProcessEnv {
+  const { baseEnv, launchEnv, hookEnv, sessionEnv, options = {} } = input;
   const env: NodeJS.ProcessEnv = { ...baseEnv };
 
   for (const key of BLOCKED_INHERITED_ENV_KEYS) {
@@ -40,9 +36,7 @@ export function buildSessionEnv(input: BuildSessionEnvInput): NodeJS.ProcessEnv 
   }
 
   const langFallback: NodeJS.ProcessEnv =
-    !env.LANG && !env.LC_ALL && !env.LC_CTYPE
-      ? { LANG: "en_US.UTF-8" }
-      : {};
+    !env.LANG && !env.LC_ALL && !env.LC_CTYPE ? { LANG: "en_US.UTF-8" } : {};
 
   const mergedEnv: NodeJS.ProcessEnv = {
     ...env,
@@ -60,6 +54,10 @@ export function buildSessionEnv(input: BuildSessionEnvInput): NodeJS.ProcessEnv 
   }
 
   if (options.agentPath?.prependWrapperToPath) {
+    mergedEnv.PATH = prependPathSegment(
+      mergedEnv.PATH,
+      options.agentPath.cliBinDir
+    );
     mergedEnv.PATH = prependPathSegment(
       mergedEnv.PATH,
       options.agentPath.wrapperBinDir

@@ -1,4 +1,5 @@
 import { requireTerminalSurfaceContent } from "@kmux/core";
+import { listBuiltinAgentDescriptors } from "@kmux/agents/builtin-runtime";
 
 import {
   applyAction,
@@ -42,7 +43,16 @@ function createUsageRuntime(
       }
       return encodeLocatedPathDto(path).path;
     },
-    ...options
+    ...options,
+    // Unit tests must never probe the user's native credential store or
+    // subscription APIs. Individual tests opt into their own fake providers.
+    subscriptionAuthDetectors: options.subscriptionAuthDetectors ?? {},
+    subscriptionFetchers: {
+      ...Object.fromEntries(
+        listBuiltinAgentDescriptors().map(({ id }) => [id, async () => null])
+      ),
+      ...options.subscriptionFetchers
+    }
   });
 }
 
@@ -78,6 +88,39 @@ class FakeUsageAdapter implements UsageAdapter {
 }
 
 describe("usage runtime", () => {
+  it("keeps local usage available with subscription credential and network probes disabled", async () => {
+    const state = createInitialState();
+    const timestampMs = Date.parse("2026-09-09T00:00:00.000Z");
+    const detectAuth = vi.fn(async () => true);
+    const fetch = vi.fn(async () => null);
+    const runtime = createUsageRuntime({
+      getState: () => state,
+      dispatchAppAction: (action) => applyAction(state, action),
+      emitSnapshot: vi.fn(),
+      now: () => timestampMs,
+      subscriptionMonitoring: false,
+      subscriptionAuthDetectors: { antigravity: detectAuth },
+      subscriptionFetchers: { antigravity: fetch },
+      adapters: [new FakeUsageAdapter({
+        vendor: "antigravity",
+        initialReads: [{ sourceCount: 1, samples: [{
+          vendor: "antigravity", timestampMs, sourcePath: "/fixture/usage.jsonl", sourceType: "jsonl",
+          inputTokens: 12, outputTokens: 3, cacheTokens: 0, totalTokens: 15, estimatedCostUsd: 0
+        }] }]
+      })]
+    });
+    try {
+      runtime.start();
+      runtime.setDashboardOpen(true);
+      await runtime.refreshNow();
+      expect(runtime.getSnapshot().totalTodayTokens).toBe(15);
+      expect(detectAuth).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      runtime.shutdown();
+    }
+  });
+
   beforeEach(() => {
     vi.useRealTimers();
   });

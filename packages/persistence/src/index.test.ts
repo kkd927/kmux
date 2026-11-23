@@ -951,6 +951,7 @@ describe("resolveAppPaths", () => {
     expect(paths.attachmentRoot).toBe("/profiles/kmux/data/attachments");
     expect(paths.agentHookBinDir).toBe("/profiles/kmux/data/bin");
     expect(paths.agentWrapperBinDir).toBe("/profiles/kmux/data/wrappers");
+    expect(paths.cliBinDir).toBe("/profiles/kmux/data/commands");
     expect(paths.nativeCacheRoot).toBe("/profiles/kmux/cache/native");
   });
 

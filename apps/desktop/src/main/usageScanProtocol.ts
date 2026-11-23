@@ -1,4 +1,7 @@
-import type { ExternalSessionResumeSpec } from "@kmux/agents";
+import type {
+  ExternalSessionResumeSpec,
+  AgentSessionTranscriptReadResult
+} from "@kmux/agents";
 import type {
   AgentStorageRoots,
   UsageAdapterScanFailure,
@@ -35,6 +38,14 @@ export type UsageScanWorkerRequest =
       requestId: string;
     }
   | {
+      type: "session-transcript";
+      requestId: string;
+      agentId: string;
+      sessionId: string;
+      dispatchMarker?: string;
+      maxBytes?: number;
+    }
+  | {
       type: "reconfigure";
       requestId: string;
       agentSettings?: AgentScopeSettings;
@@ -61,6 +72,11 @@ export type UsageScanWorkerResponse =
       resumeSpecs: ExternalSessionResumeSpec[];
     }
   | { type: "changed"; vendor: UsageVendor }
+  | {
+      type: "session-transcript-result";
+      requestId: string;
+      result: AgentSessionTranscriptReadResult;
+    }
   | {
       type: "error";
       requestId: string;

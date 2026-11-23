@@ -48,6 +48,10 @@ await forbidImports(
   /from\s+["']@kmux\/agents(?:\/|["'])/u
 );
 await forbidImports(
+  "packages/orchestration/src",
+  /from\s+["']@kmux\/agents(?:\/|["'])/u
+);
+await forbidImports(
   "apps/desktop/src/renderer/src",
   /from\s+["'](?:@kmux\/agents\/(?:composition|builtin-|generated-)|@kmux\/metadata)/u
 );
@@ -62,6 +66,7 @@ const consumerFiles = (
       "packages/core/src",
       "packages/proto/src",
       "packages/persistence/src",
+      "packages/orchestration/src",
       "packages/cli/src",
       "packages/agent-integration/src",
       "packages/agents/src",

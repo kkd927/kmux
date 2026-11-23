@@ -20,7 +20,11 @@ import {
   type PlatformKeyboardPolicy
 } from "../../../shared/platform/keyboardPolicy";
 
-type RightPanelKind = "usage" | "sessions" | null;
+type RightPanelKind =
+  | "usage"
+  | "sessions"
+  | "workflows"
+  | null;
 
 interface DismissibleUiState {
   paletteOpen: boolean;

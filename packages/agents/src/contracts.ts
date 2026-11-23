@@ -1,8 +1,10 @@
 import type {
+  AgentModelOptionDto,
   AgentCapabilityKey,
   AgentDescriptorDto,
   AgentId,
   AgentPresentationDto,
+  AgentSkillPlacementScope,
   AgentScopeSettings,
   AgentSettings,
   MetadataSourceRoleId,
@@ -62,6 +64,60 @@ export interface AgentResumeCapability {
     options?: { readonly fork?: boolean }
   ): readonly string[];
   readonly supportsFork?: boolean;
+}
+
+export interface AgentLaunchPreferences {
+  readonly model?: string;
+  readonly effort?: string;
+}
+
+export interface AgentLaunchPreferencesCapability {
+  readonly supportedEfforts: readonly string[];
+  buildArgs(preferences: AgentLaunchPreferences): readonly string[];
+  listModels?(options: {
+    readonly command: string;
+    readonly homeDir: string;
+    readonly env: NodeJS.ProcessEnv;
+  }): Promise<readonly AgentModelOptionDto[]>;
+}
+
+/** Agent-owned policy applied only to kmux-managed Worker terminals. */
+export interface AgentOrchestrationLaunchCapability {
+  readonly defaultArgs: readonly string[];
+}
+
+export type AgentTerminalReadiness =
+  | { readonly state: "ready" }
+  | { readonly state: "blocked"; readonly reason: string }
+  | null;
+
+/** Classifies an Agent's current input screen, never its output history. */
+export interface AgentTerminalReadinessCapability {
+  classify(visible: string): AgentTerminalReadiness;
+}
+
+export interface AgentSkillPlacementCapability {
+  readonly supportedScopes: readonly AgentSkillPlacementScope[];
+  resolveRoot(options: {
+    readonly scope: AgentSkillPlacementScope;
+    readonly homeDir: string;
+    readonly workspaceDir?: string;
+    readonly env?: NodeJS.ProcessEnv;
+  }): string | undefined;
+}
+
+export type AgentWorkspaceTrustPreparation =
+  | "not-required"
+  | "already-trusted"
+  | "trusted"
+  | "unavailable";
+
+export interface AgentWorkspaceTrustCapability {
+  prepare(options: {
+    readonly cwd: string;
+    readonly homeDir: string;
+    readonly env?: NodeJS.ProcessEnv;
+  }): AgentWorkspaceTrustPreparation;
 }
 
 export type NormalizedAgentEventName =
@@ -216,10 +272,37 @@ export interface AgentExternalSessionProjectionOptions extends AgentMetadataRunt
 }
 
 export interface AgentSessionsCapability {
+  readonly transcript?: AgentSessionTranscriptCapability;
   createMetadataProjection(
     options: AgentExternalSessionProjectionOptions
   ): AgentExternalSessionMetadataProjection;
   createSourceProjection?(): AgentSessionSourceProjection;
+}
+
+export interface AgentSessionTranscriptMessage {
+  readonly role: "user" | "assistant";
+  readonly text: string;
+}
+
+export interface AgentSessionTranscriptCapability {
+  matchesPath(input: {
+    readonly roots: readonly string[];
+    readonly path: string;
+    readonly sessionId: string;
+  }): boolean;
+  decodeRecord(record: unknown): AgentSessionTranscriptMessage | undefined;
+}
+
+export interface AgentSessionTranscriptReadResult {
+  readonly status:
+    | "available"
+    | "empty"
+    | "missing"
+    | "unsupported"
+    | "unreadable";
+  readonly text: string;
+  readonly truncated: boolean;
+  readonly reason?: string;
 }
 
 export interface AgentSessionSourceClaimProjection {
@@ -340,6 +423,11 @@ export interface AgentModule {
   readonly command?: AgentCommandDefinition;
   readonly commandWrapper?: AgentCommandWrapperDefinition;
   readonly resume?: AgentResumeCapability;
+  readonly launchPreferences?: AgentLaunchPreferencesCapability;
+  readonly orchestrationLaunch?: AgentOrchestrationLaunchCapability;
+  readonly terminalReadiness?: AgentTerminalReadinessCapability;
+  readonly skillPlacement?: AgentSkillPlacementCapability;
+  readonly workspaceTrust?: AgentWorkspaceTrustCapability;
   readonly hooks?: AgentHookCapability;
   readonly metadataSources?: AgentMetadataSourcesCapability;
   readonly sessions?: AgentSessionsCapability;
@@ -358,19 +446,29 @@ export interface AgentCatalog {
 export type AgentCapabilityFor<K extends AgentCapabilityKey> =
   K extends "resume"
     ? AgentResumeCapability
-    : K extends "hooks"
-      ? AgentHookCapability
-      : K extends "sessions"
-        ? AgentSessionsCapability
-        : K extends "usage"
-          ? AgentUsageCapabilityFactory
-          : K extends "subscription"
-            ? AgentSubscriptionCapabilityFactory
-            : K extends "processDetection"
-              ? AgentProcessDetectionCapability
-              : K extends "terminalNotifications"
-                ? AgentTerminalNotificationCapability
-                : never;
+    : K extends "launchPreferences"
+      ? AgentLaunchPreferencesCapability
+      : K extends "orchestrationLaunch"
+        ? AgentOrchestrationLaunchCapability
+        : K extends "terminalReadiness"
+          ? AgentTerminalReadinessCapability
+          : K extends "skillPlacement"
+            ? AgentSkillPlacementCapability
+            : K extends "workspaceTrust"
+              ? AgentWorkspaceTrustCapability
+              : K extends "hooks"
+                ? AgentHookCapability
+                : K extends "sessions"
+                  ? AgentSessionsCapability
+                  : K extends "usage"
+                    ? AgentUsageCapabilityFactory
+                    : K extends "subscription"
+                      ? AgentSubscriptionCapabilityFactory
+                      : K extends "processDetection"
+                        ? AgentProcessDetectionCapability
+                        : K extends "terminalNotifications"
+                          ? AgentTerminalNotificationCapability
+                          : never;
 
 export interface CapabilityResolver<K extends AgentCapabilityKey> {
   resolve(id: AgentId): AgentCapabilityFor<K> | undefined;

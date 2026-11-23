@@ -1,6 +1,12 @@
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -81,6 +87,14 @@ describe("usage scan worker launch", () => {
           timestamp,
           payload: { id: "worker-session", cwd: "/tmp/worker-project" }
         }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Detailed worker findings" }]
+          }
+        }),
         ""
       ].join("\n"),
       "utf8"
@@ -96,6 +110,43 @@ describe("usage scan worker launch", () => {
     try {
       const usage = await client.scan({ startOfDayMs: 0, initial: true });
       const snapshot = await client.sessions.listExternalAgentSessions();
+      await expect(
+        client.readSessionTranscript({
+          agentId: "codex",
+          sessionId: "worker-session"
+        })
+      ).resolves.toMatchObject({
+        status: "available",
+        text: "[assistant]\nDetailed worker findings",
+        truncated: false
+      });
+      await expect(
+        client.readSessionTranscript({
+          agentId: "codex",
+          sessionId: "another-session"
+        })
+      ).resolves.toMatchObject({ status: "missing", text: "" });
+      appendFileSync(
+        join(sessionDir, "rollout-worker-session.jsonl"),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [
+              { type: "output_text", text: "Latest completion findings" }
+            ]
+          }
+        }) + "\n"
+      );
+      expect(
+        (
+          await client.readSessionTranscript({
+            agentId: "codex",
+            sessionId: "worker-session"
+          })
+        ).text
+      ).toContain("Latest completion findings");
       expect(usage.reads).toEqual(
         expect.arrayContaining([expect.objectContaining({ sourceCount: 1 })])
       );

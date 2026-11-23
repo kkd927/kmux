@@ -9,9 +9,7 @@ import {
   type ShellInputReadyRecord
 } from "./shellInputReady";
 
-function createRecord(
-  pendingInitialInput?: string
-): ShellInputReadyRecord & { writes: string[] } {
+function createRecord(pendingInitialInput?: string) {
   const writes: string[] = [];
   return {
     sessionId: "session_1",
@@ -25,7 +23,7 @@ function createRecord(
       }
     },
     writes
-  };
+  } satisfies ShellInputReadyRecord & { writes: string[] };
 }
 
 describe("pty-host shell input readiness", () => {

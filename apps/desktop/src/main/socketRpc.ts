@@ -1,6 +1,11 @@
 import { isAbsolute } from "node:path";
 
 import { z } from "zod";
+import {
+  orchestrationParamSchemas,
+  isOrchestrationMethod,
+  type OrchestrationMethod
+} from "@kmux/orchestration";
 
 const emptyParamsSchema = z.object({}).strict();
 const splitDirectionSchema = z.enum(["left", "right", "up", "down"]);
@@ -199,6 +204,16 @@ const socketParamSchemas = {
       path: agentIntegrationPathSchema
     })
     .strict(),
+  ...orchestrationParamSchemas,
+  "orchestration.skill.status": z
+    .object({ agentIds: z.array(agentIdSchema).min(1).max(16) })
+    .strict(),
+  "orchestration.skill.install": z
+    .object({
+      agentIds: z.array(agentIdSchema).min(1).max(16),
+      confirm: z.literal(true)
+    })
+    .strict(),
   "sidebar.set_progress": z
     .object({
       workspaceId: z.string().min(1).optional(),
@@ -274,7 +289,11 @@ export function parseSocketRequest(
     throw new UnknownSocketMethodError(method);
   }
 
-  const { authToken: _authToken, ...methodParams } = params;
+  const {
+    authToken: _authToken,
+    callerPid: _callerPid,
+    ...methodParams
+  } = params;
   return {
     id,
     method,
@@ -285,4 +304,10 @@ export function parseSocketRequest(
 
 function isSocketRpcMethod(method: string): method is SocketRpcMethod {
   return Object.hasOwn(socketParamSchemas, method);
+}
+
+export function isOrchestrationSocketRequest(
+  request: ParsedSocketRequest
+): request is Extract<ParsedSocketRequest, { method: OrchestrationMethod }> {
+  return isOrchestrationMethod(request.method);
 }

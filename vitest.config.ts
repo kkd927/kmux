@@ -65,6 +65,22 @@ export default defineConfig({
         "packages/agents/src/composition.ts"
       ),
       "@kmux/agents": resolve(currentDir, "packages/agents/src/index.ts"),
+      "@kmux/orchestration/editor": resolve(
+        currentDir,
+        "packages/orchestration/src/editorDocument.ts"
+      ),
+      "@kmux/orchestration/scopes": resolve(
+        currentDir,
+        "packages/orchestration/src/scopes.ts"
+      ),
+      "@kmux/orchestration/node": resolve(
+        currentDir,
+        "packages/orchestration/src/node.ts"
+      ),
+      "@kmux/orchestration": resolve(
+        currentDir,
+        "packages/orchestration/src/index.ts"
+      ),
       "@kmux/ui": resolve(currentDir, "packages/ui/src/index.ts")
     }
   },

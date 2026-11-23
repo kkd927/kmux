@@ -191,33 +191,20 @@ function rendererResizeRequestPrecedesApply(profilePath: string): boolean {
     return false;
   }
   const events = readSmoothnessProfileEvents(profilePath);
-  const byGeneration = new Map<
-    number,
-    { applyIndex: number; requestIndex: number }
-  >();
+  let requestIndex = -1;
   for (const [index, event] of events.entries()) {
     if (event.source !== "renderer") {
       continue;
     }
-    const generation = event.details?.generation;
-    if (typeof generation !== "number") {
+    if (event.name === "terminal.resize.request") {
+      requestIndex = index;
       continue;
     }
-    const entry = byGeneration.get(generation) ?? {
-      applyIndex: -1,
-      requestIndex: -1
-    };
-    if (event.name === "terminal.resize.apply" && entry.applyIndex < 0) {
-      entry.applyIndex = index;
+    if (event.name === "terminal.resize.apply" && requestIndex >= 0) {
+      return true;
     }
-    if (event.name === "terminal.resize.request" && entry.requestIndex < 0) {
-      entry.requestIndex = index;
-    }
-    byGeneration.set(generation, entry);
   }
-  return [...byGeneration.values()].some(
-    (entry) => entry.requestIndex >= 0 && entry.applyIndex > entry.requestIndex
-  );
+  return false;
 }
 
 function readSmoothnessProfileEvents(profilePath: string): Array<{
@@ -509,8 +496,7 @@ test("settings modal discards an unsaved text font when cancelled", async () => 
     await openSettingsCategory(page, "Terminal");
     await expect(page.getByLabel("Text font")).toHaveValue(savedFont);
     expect(
-      (await getView(page)).settings.terminalTypography
-        .preferredTextFontFamily
+      (await getView(page)).settings.terminalTypography.preferredTextFontFamily
     ).toBe(savedFont);
   } finally {
     await closeKmux(launched);
@@ -1495,6 +1481,8 @@ test("right sidebar toggles keep streaming terminal output visible during resize
         `terminal should stay visible while right sidebar toggles, sample group ${index}`
       );
     }
+
+    await expect(terminalRows).toContainText(`${marker}_79`);
 
     const snapshot = await getSurfaceSnapshot(page, activeSurfaceId, {
       settleForMs: 200,

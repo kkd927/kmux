@@ -6,6 +6,8 @@ const MAX_CAPABILITIES = 256;
 const MAX_CAPABILITY_BYTES = 256;
 const MAX_POSIX_UID = 0xffff_ffff;
 const remotePathBindingToken: unique symbol = Symbol("remotePathBindingToken");
+declare const localPathNominalBrand: unique symbol;
+declare const remotePathNominalBrand: unique symbol;
 
 const localPathValues = new WeakMap<LocalPath, string>();
 const remotePathValues = new WeakMap<
@@ -19,8 +21,6 @@ const remotePathValues = new WeakMap<
  * it back into a string accepted by Node or Electron filesystem APIs.
  */
 export class LocalPath {
-  declare private readonly localPathBrand: never;
-
   private constructor(rawValue: string) {
     localPathValues.set(this, rawValue);
     Object.freeze(this);
@@ -31,10 +31,13 @@ export class LocalPath {
   }
 }
 
+// eslint-disable-next-line no-redeclare -- intentional nominal declaration merge
+export interface LocalPath {
+  readonly [localPathNominalBrand]: never;
+}
+
 /** An opaque POSIX path owned by one resolved SSH target provider. */
 export class RemotePath {
-  declare private readonly remotePathBrand: never;
-
   private constructor(rawValue: string, targetId?: Id) {
     remotePathValues.set(this, {
       rawValue,
@@ -72,6 +75,11 @@ export class RemotePath {
       ? path
       : new RemotePath(binding.rawValue, validatedTargetId);
   }
+}
+
+// eslint-disable-next-line no-redeclare -- intentional nominal declaration merge
+export interface RemotePath {
+  readonly [remotePathNominalBrand]: never;
 }
 
 export type WorkspaceTarget =

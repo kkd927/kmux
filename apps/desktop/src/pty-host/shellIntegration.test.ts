@@ -334,11 +334,82 @@ describe("shell integration launch preparation", () => {
       'set -- --config tui.notification_method=osc9 "$@"'
     );
     expect(readFileSync(join(wrapperDir, "bin", "codex"), "utf8")).toContain(
-      '"$KMUX_REAL_AGENT" "$@" || KMUX_EXIT_CODE=$?'
+      'exec "$KMUX_REAL_AGENT" "$@"'
     );
     expect(existsSync(join(wrapperDir, "bin", "gemini"))).toBe(false);
     rmSync(fakeHome, { recursive: true, force: true });
   });
+
+  it(
+    "forwards targeted termination by replacing the wrapper with Codex",
+    async () => {
+      const wrapperBinDir = mkdtempSync(join(tmpdir(), "kmux-wrapper-signal-"));
+      const realBinDir = mkdtempSync(join(tmpdir(), "kmux-real-signal-"));
+      const fakeHome = mkdtempSync(join(tmpdir(), "kmux-signal-home-"));
+      const pidFile = join(fakeHome, "codex.pid");
+      const realCodex = join(realBinDir, "codex");
+      let child: ReturnType<typeof spawn> | null = null;
+      let realPid: number | null = null;
+
+      try {
+        writeAgentWrapperBinaries(wrapperBinDir);
+        writeFileSync(
+          realCodex,
+          [
+            `#!${process.execPath}`,
+            'require("node:fs").writeFileSync(process.env.KMUX_TEST_PID_FILE, String(process.pid));',
+            "setInterval(() => {}, 1_000);",
+            ""
+          ].join("\n"),
+          "utf8"
+        );
+        chmodSync(realCodex, 0o755);
+
+        child = spawn(join(wrapperBinDir, "codex"), [], {
+          env: isolatedChildEnv({
+            HOME: fakeHome,
+            CODEX_HOME: join(fakeHome, ".codex"),
+            KMUX_AGENT_BIN_DIR: wrapperBinDir,
+            KMUX_AGENT_WRAPPER_BIN_DIR: wrapperBinDir,
+            KMUX_TEST_PID_FILE: pidFile,
+            PATH: `${wrapperBinDir}:${realBinDir}:/usr/bin:/bin`
+          }),
+          stdio: "ignore"
+        });
+
+        for (let attempt = 0; attempt < 100 && !existsSync(pidFile); attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(existsSync(pidFile)).toBe(true);
+        realPid = Number(readFileSync(pidFile, "utf8"));
+        expect(realPid).toBe(child.pid);
+
+        child.kill("SIGTERM");
+        await Promise.race([
+          once(child, "exit"),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("wrapper did not terminate")), 2_000)
+          )
+        ]);
+        expect(child.signalCode).toBe("SIGTERM");
+      } finally {
+        if (child && child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+        }
+        if (realPid && realPid !== child?.pid) {
+          try {
+            process.kill(realPid, "SIGKILL");
+          } catch {
+            // The process already exited.
+          }
+        }
+        rmSync(wrapperBinDir, { recursive: true, force: true });
+        rmSync(realBinDir, { recursive: true, force: true });
+        rmSync(fakeHome, { recursive: true, force: true });
+      }
+    },
+    SPAWNED_WRAPPER_TEST_TIMEOUT_MS
+  );
 
   it.skipIf(!ZSH_PATH)(
     "moves the Codex wrapper back to the front after zsh startup files reorder PATH",
@@ -351,12 +422,20 @@ describe("shell integration launch preparation", () => {
       const wrapperBinDir = mkdtempSync(
         join(tmpdir(), "kmux-zsh-path-wrapper-")
       );
+      const cliBinDir = mkdtempSync(join(tmpdir(), "kmux-zsh-path-cli-"));
       const realBinDir = mkdtempSync(join(tmpdir(), "kmux-zsh-path-real-"));
       const realCodex = join(realBinDir, "codex");
       const wrapperCodex = join(wrapperBinDir, "codex");
+      const kmuxCli = join(cliBinDir, "kmux");
 
-      writeFileSync(realCodex, "#!/bin/sh\nexit 0\n", "utf8");
+      writeFileSync(
+        realCodex,
+        '#!/bin/sh\nprintf "INNER_KMUX=%s\\n" "$(command -v kmux)"\n',
+        "utf8"
+      );
       chmodSync(realCodex, 0o755);
+      writeFileSync(kmuxCli, "#!/bin/sh\nexit 0\n", "utf8");
+      chmodSync(kmuxCli, 0o755);
       writeFileSync(
         join(fakeHome, ".zprofile"),
         `export PATH="${realBinDir}:$PATH"\n`,
@@ -372,6 +451,7 @@ describe("shell integration launch preparation", () => {
       const agentPath = {
         helperBinDir,
         wrapperBinDir,
+        cliBinDir,
         prependWrapperToPath: true
       };
       const sessionEnv = buildSessionEnv({
@@ -410,7 +490,8 @@ describe("shell integration launch preparation", () => {
             "-lic",
             [
               'printf "RESOLVED=%s\\n" "$(whence -p codex)"',
-              'printf "PATH=%s\\n" "$PATH"'
+              'printf "PATH=%s\\n" "$PATH"',
+              "codex"
             ].join("; ")
           ],
           {
@@ -441,10 +522,12 @@ describe("shell integration launch preparation", () => {
           pathEntries.filter((entry) => entry === wrapperBinDir)
         ).toHaveLength(1);
         expect(pathEntries).toContain(realBinDir);
+        expect(stdout).toContain(`INNER_KMUX=${kmuxCli}`);
       } finally {
         rmSync(fakeHome, { recursive: true, force: true });
         rmSync(helperBinDir, { recursive: true, force: true });
         rmSync(wrapperBinDir, { recursive: true, force: true });
+        rmSync(cliBinDir, { recursive: true, force: true });
         rmSync(realBinDir, { recursive: true, force: true });
       }
     },

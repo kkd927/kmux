@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "definitionId": "invalid",
+  "version": 1,
+  "name": "Invalid",
+  "inputs": [],
+  "outputs": [],
+  "agentBindings": {},
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "start",
+      "title": "Start",
+      "config": { "version": 1 }
+    },
+    { "id": "end", "kind": "end", "title": "End", "config": { "version": 1 } }
+  ],
+  "edges": [
+    { "id": "e", "from": { "nodeId": "start" }, "to": { "nodeId": "end" } }
+  ],
+  "policies": {
+    "limits": {
+      "maxNodes": 2,
+      "maxEdges": 1,
+      "maxGraphDepth": 2,
+      "maxFanOut": 1,
+      "maxLoopIterations": 1,
+      "maxActiveAttempts": 1,
+      "maxAttemptsPerSession": 1,
+      "maxDispatches": 1,
+      "maxCoordinatorTurns": 1,
+      "maxGraphPatches": 1,
+      "maxWallClockMs": 1000,
+      "maxActiveExecutionMs": 1000,
+      "maxArtifactBytes": 1,
+      "maxStructuredResultBytes": 1
+    },
+    "failure": "fail-run",
+    "cancellation": "cancel-active"
+  },
+  "silentFallback": true
+}

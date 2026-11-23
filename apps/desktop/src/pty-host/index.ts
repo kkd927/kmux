@@ -29,7 +29,7 @@ import {
 import type { PtyEvent, PtyRequest } from "../shared/ptyProtocol";
 import type * as PtyModule from "node-pty";
 import { loadNodePty } from "./nodePtyLoader";
-import { encodeTerminalKeyInput } from "./terminalInput";
+import { encodeTerminalKeyInput, isTerminalFocusReport } from "./terminalInput";
 import {
   buildOsc9Notification,
   buildOsc777Notification,
@@ -95,6 +95,8 @@ import {
 import { FairSessionScheduler } from "./fairSessionScheduler";
 import { SessionMutationQueue } from "./sessionMutationQueue";
 import { SnapshotCache } from "./snapshotCache";
+import { captureJsonStdout } from "./jsonStdoutCapture";
+import { restoreTerminalHistory } from "./restoreTerminalHistory";
 import { TerminalDeltaStore } from "./terminalDeltaStore";
 import { createTerminalDataPlaneSupervisorMetrics } from "./terminalDataPlaneSupervisorMetrics";
 import {
@@ -124,6 +126,18 @@ import {
   resolveTerminalOutputGapMs,
   settlePtyProfileBucketsBeforeDiagnosticsDisable
 } from "./terminalDiagnostics";
+import {
+  completeOrchestrationInputDelivery,
+  createOrchestrationInputBrokerState,
+  directTerminalInputObservedAtOrAfter,
+  deliverOrchestrationInput,
+  hasNewOrchestrationPaste,
+  observeDirectTerminalInput,
+  orchestrationDeliveryWasInterruptedByDirectInput,
+  queryOrchestrationDelivery,
+  registerOrchestrationReadiness,
+  type OrchestrationInputBrokerState
+} from "./orchestrationInputBroker";
 
 let cachedPty: typeof PtyModule | null = null;
 
@@ -148,7 +162,7 @@ interface SessionRuntime {
   runtimeEpoch: Id;
   cwd?: string;
   title: string;
-  pty: PtyModule.IPty;
+  pty?: PtyModule.IPty;
   ptyResize: PtyResizeCoalescer;
   terminal: HeadlessTerminal;
   queryReplyListener: DisposableLike;
@@ -161,6 +175,7 @@ interface SessionRuntime {
   pendingDirectInputs: Array<string | Buffer>;
   pendingDirectInputBytes: number;
   inputTelemetrySequence: Uint64;
+  inputBroker: OrchestrationInputBrokerState;
   pendingInputTelemetry?: {
     inputAcceptedAt: number;
     inputSequence: Uint64;
@@ -209,6 +224,14 @@ interface SessionRuntime {
   }>;
   exited: boolean;
   exitCode?: number;
+  commandCapture?: {
+    operationId: Id;
+    maxOutputBytes: number;
+    jsonStdout?: ReturnType<typeof captureJsonStdout>;
+    chunks: string[];
+    outputBytes: number;
+    truncated: boolean;
+  };
 }
 
 interface QueuedOutputSegment {
@@ -354,7 +377,7 @@ const sessionScheduler = new FairSessionScheduler({
       }`
     });
     try {
-      record?.pty.kill();
+      record?.pty?.kill();
     } catch {
       // The PTY may already have exited after the failed mutation.
     }
@@ -847,8 +870,8 @@ function logPtyResizeState(
     closing: record.closing,
     headlessCols: record.cols,
     headlessRows: record.rows,
-    ptyReportedCols: record.pty.cols,
-    ptyReportedRows: record.pty.rows,
+    ptyReportedCols: record.pty?.cols,
+    ptyReportedRows: record.pty?.rows,
     coalescer: record.ptyResize.getState(),
     lastPtyResizeCommit: record.lastPtyResizeCommit ?? null,
     attachmentCount: record.stream.attachmentCount,
@@ -993,7 +1016,7 @@ function writeOrQueueDirectInput(
   input: string | Buffer
 ): void {
   if (record.shellInputReady) {
-    record.pty.write(input);
+    record.pty?.write(input);
     return;
   }
   const bytes =
@@ -1012,7 +1035,7 @@ function flushPendingDirectInput(record: SessionRuntime): void {
   const pending = record.pendingDirectInputs.splice(0);
   record.pendingDirectInputBytes = 0;
   for (const input of pending) {
-    record.pty.write(input);
+    record.pty?.write(input);
   }
 }
 
@@ -1127,18 +1150,35 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     previous.closing = true;
     disposeSession(previous, true);
   }
-  const pty = resolvePtyModule();
   const preparedLaunch = resolvePtySpawnLaunch(request, process.env);
-  let ptyProcess: PtyModule.IPty;
+  let ptyProcess: PtyModule.IPty | undefined;
+  const capture = request.spec.historyOnly
+    ? undefined
+    : orchestrationCommandCapture(request.spec.launch.env);
   try {
-    ptyProcess = pty.spawn(preparedLaunch.shellPath, preparedLaunch.args, {
-      name: "xterm-256color",
-      cols: request.spec.cols,
-      rows: request.spec.rows,
-      cwd: preparedLaunch.cwd,
-      env: preparedLaunch.env
-    });
+    if (!request.spec.historyOnly) {
+      if (
+        capture &&
+        request.spec.launch.env?.KMUX_ORCHESTRATION_RESULT_MODE ===
+          "json-stdout"
+      ) {
+        capture.jsonStdout = captureJsonStdout(
+          preparedLaunch.shellPath,
+          preparedLaunch.args,
+          capture.maxOutputBytes
+        );
+      }
+      const command = capture?.jsonStdout ?? preparedLaunch;
+      ptyProcess = resolvePtyModule().spawn(command.shellPath, command.args, {
+        name: "xterm-256color",
+        cols: request.spec.cols,
+        rows: request.spec.rows,
+        cwd: preparedLaunch.cwd,
+        env: preparedLaunch.env
+      });
+    }
   } catch (error) {
+    capture?.jsonStdout?.close();
     const errorMessage = error instanceof Error ? error.message : String(error);
     send({
       type: "error",
@@ -1155,8 +1195,8 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     return;
   }
   const terminal = new HeadlessTerminalCtor({
-    cols: request.spec.cols,
-    rows: request.spec.rows,
+    cols: request.spec.restoredOutput?.cols ?? request.spec.cols,
+    rows: request.spec.restoredOutput?.rows ?? request.spec.rows,
     allowProposedApi: true,
     cursorBlink: true,
     windowOptions: { getWinSizeChars: true },
@@ -1179,16 +1219,18 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   });
 
   let record!: SessionRuntime;
+  let restoringOutput = false;
   const queryReplyListener = terminal.onData(
     createTerminalQueryReplyHandler({
       isCurrent: () =>
+        !restoringOutput &&
         sessions.get(record.sessionId) === record &&
         !record.closing &&
         !record.exited,
       // Parser-generated replies are protocol traffic, not user input. They
       // bypass shell-ready gating because a child can wait for DA/DSR/CPR
       // during startup, and they never feed usage/input observation.
-      write: (reply) => record.pty.write(reply),
+      write: (reply) => record.pty?.write(reply),
       onWriteError: (error, bytes) => {
         logDiagnostics("pty-host.terminal-query-reply.failed", {
           surfaceId: record.surfaceId,
@@ -1206,14 +1248,14 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     applyOutputRun: (segments) => writeTerminalOutputRun(record, segments),
     onHighWatermark: () => {
       try {
-        ptyProcess.pause();
+        ptyProcess?.pause();
       } catch {
         // The PTY may exit while its parser backlog crosses the watermark.
       }
     },
     onLowWatermark: () => {
       try {
-        ptyProcess.resume();
+        ptyProcess?.resume();
       } catch {
         // The PTY may already be disposed while the queue is being released.
       }
@@ -1228,13 +1270,29 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     deltaStore,
     createCheckpoint: () => requestTerminalCheckpoint(record),
     getDimensions: () => ({ cols: record.cols, rows: record.rows }),
-    writeText: (text) => writeOrQueueDirectInput(record, text),
-    writeBinary: (data) =>
-      writeOrQueueDirectInput(record, Buffer.from(data, "binary")),
-    writeKey: (input) =>
-      writeOrQueueDirectInput(record, encodeTerminalKeyInput(input)),
+    writeText: (text) => {
+      if (!record.pty || record.exited) return false;
+      writeOrQueueDirectInput(record, text);
+      return true;
+    },
+    writeBinary: (data) => {
+      if (!record.pty || record.exited) return false;
+      writeOrQueueDirectInput(record, Buffer.from(data, "binary"));
+      return true;
+    },
+    writeKey: (input) => {
+      if (!record.pty || record.exited) return false;
+      writeOrQueueDirectInput(record, encodeTerminalKeyInput(input));
+      return true;
+    },
     resize: (resizeRequest) => requestDirectResize(record, resizeRequest),
     onInputObserved: (message) => {
+      const focusReport =
+        message.type !== "input:key" &&
+        isTerminalFocusReport(
+          message.type === "input:text" ? message.text : message.data
+        );
+      if (!focusReport) observeDirectTerminalInput(record.inputBroker);
       const telemetryEnabled = terminalMetricsProfile.enabled;
       const inputAcceptedAt = telemetryEnabled
         ? terminalDataPlaneNowMs(performance)
@@ -1287,6 +1345,9 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
           }
         });
       }
+      // Keep forwarding focus reports and measuring them, without fencing
+      // orchestration delivery or retaining a completed Worker as user-owned.
+      if (focusReport) return;
       send({
         type: "input.observed",
         session: sessionRef(record),
@@ -1333,7 +1394,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
           record.lastPtyResizeCommit = { ...context, cols, rows };
         }
         try {
-          ptyProcess.resize(cols, rows);
+          ptyProcess?.resize(cols, rows);
           if (context) {
             logTerminalDiagnostics("terminal.pty-resize.commit", {
               surfaceId: request.spec.surfaceId,
@@ -1342,8 +1403,8 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
               cols,
               rows,
               succeeded: true,
-              ptyReportedCols: ptyProcess.cols,
-              ptyReportedRows: ptyProcess.rows
+              ptyReportedCols: ptyProcess?.cols,
+              ptyReportedRows: ptyProcess?.rows
             });
           }
         } catch (error) {
@@ -1381,6 +1442,7 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     pendingDirectInputs: [],
     pendingDirectInputBytes: 0,
     inputTelemetrySequence: uint64(0n),
+    inputBroker: createOrchestrationInputBrokerState(),
     outputDiagnosticClassifier: terminalMetricsProfile.enabled
       ? createTerminalOutputDiagnosticClassifier()
       : undefined,
@@ -1409,7 +1471,8 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     settledSnapshotTimer: null,
     closing: false,
     pendingCloseAcks: [],
-    exited: false
+    exited: false,
+    commandCapture: capture
   };
   sessions.set(record.sessionId, record);
   syncSessionTerminalVtDiagnostics(record);
@@ -1419,15 +1482,48 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
       sessionId: record.sessionId,
       cols: record.cols,
       rows: record.rows,
-      ptyPid: record.pty.pid,
-      ptyReportedCols: record.pty.cols,
-      ptyReportedRows: record.pty.rows,
+      ptyPid: record.pty?.pid,
+      ptyReportedCols: record.pty?.cols,
+      ptyReportedRows: record.pty?.rows,
       coalescer: record.ptyResize.getState()
     });
   }
   sessionScheduler.register(record.sessionId, () =>
     record.mutationQueue.drainSlice()
   );
+
+  if (request.spec.restoredOutput) {
+    const history = request.spec.restoredOutput;
+    // Seed display state behind the parser barrier, before any live PTY output.
+    // Historical VT must never reach the PTY input or issue terminal replies.
+    void enqueueTerminalBarrier(record, async () => {
+      restoringOutput = true;
+      try {
+        if (request.spec.historyOnly) {
+          await new Promise<void>((resolve) =>
+            terminal.write(history.vt, resolve)
+          );
+        } else await restoreTerminalHistory(terminal, history.vt);
+        terminal.resize(record.cols, record.rows);
+        record.snapshotCache.invalidate();
+      } finally {
+        restoringOutput = false;
+      }
+    }).catch((error) =>
+      logDiagnostics("pty-host.terminal-history.restore-failed", {
+        surfaceId: record.surfaceId,
+        message: String(error)
+      })
+    );
+  }
+
+  if (!ptyProcess) {
+    void enqueueTerminalBarrier(record, () => {
+      send({ type: "history.ready", sessionId: record.sessionId });
+      finalizeSessionExit(record, request.spec.historyOnly?.exitCode);
+    });
+    return;
+  }
 
   terminal.parser.registerOscHandler(7, (data: string) => {
     const cwd = resolveOsc7Cwd(record.cwd, data);
@@ -1601,6 +1697,19 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
   });
 
   ptyProcess.onData((chunk) => {
+    if (record.commandCapture && !record.commandCapture.jsonStdout) {
+      const bytes = Buffer.byteLength(chunk, "utf8");
+      if (
+        !record.commandCapture.truncated &&
+        record.commandCapture.outputBytes + bytes <=
+          record.commandCapture.maxOutputBytes
+      ) {
+        record.commandCapture.chunks.push(chunk);
+      } else {
+        record.commandCapture.truncated = true;
+      }
+      record.commandCapture.outputBytes += bytes;
+    }
     const telemetryEnabled = terminalMetricsProfile.enabled;
     const ptyReadAt = telemetryEnabled
       ? terminalDataPlaneNowMs(performance)
@@ -1721,6 +1830,129 @@ function spawnSession(request: Extract<PtyRequest, { type: "spawn" }>): void {
     pid: ptyProcess.pid,
     shellInputReady: record.shellInputReady
   });
+}
+
+function isExactGeneration(
+  record: SessionRuntime | undefined,
+  expected: {
+    sessionId: Id;
+    surfaceId: Id;
+    runtimeEpoch: Id;
+  }
+): record is SessionRuntime {
+  return Boolean(
+    record &&
+    record.sessionId === expected.sessionId &&
+    record.surfaceId === expected.surfaceId &&
+    record.runtimeEpoch === expected.runtimeEpoch &&
+    !record.exited &&
+    !record.closing
+  );
+}
+
+function sendDeliveryAck(
+  request: Extract<PtyRequest, { type: "input:orchestrated" }>,
+  outcome:
+    | "written"
+    | "conflict"
+    | "fenced"
+    | "generation-mismatch"
+    | "unknown",
+  replay: boolean
+): void {
+  send({
+    type: "input.delivery.ack",
+    requestId: request.requestId,
+    session: request.session,
+    operationId: request.operationId,
+    payloadHash: request.payloadHash,
+    outcome,
+    replay
+  });
+}
+
+/** Paste first, prove this operation was reflected by the TUI, then press Enter. */
+function verifyPastedInput(
+  record: SessionRuntime,
+  request: Extract<PtyRequest, { type: "input:orchestrated" }>,
+  beforePaste: string
+): void {
+  const startedAt = Date.now();
+  const check = () => {
+    if (!isExactGeneration(sessions.get(record.sessionId), request.session)) {
+      completeOrchestrationInputDelivery(
+        record.inputBroker,
+        request.operationId,
+        request.payloadHash,
+        "unknown"
+      );
+      sendDeliveryAck(request, "generation-mismatch", false);
+      return;
+    }
+    const visible = record.serialize.serialize({ scrollback: 0 });
+    if (
+      orchestrationDeliveryWasInterruptedByDirectInput(
+        record.inputBroker,
+        request.operationId,
+        request.payloadHash
+      )
+    ) {
+      completeOrchestrationInputDelivery(
+        record.inputBroker,
+        request.operationId,
+        request.payloadHash,
+        "unknown"
+      );
+      // The user's normal input path won the race. Never submit or resend
+      // either paste when ownership of the visible input field is ambiguous.
+      sendDeliveryAck(request, "unknown", false);
+      return;
+    }
+    if (
+      hasNewOrchestrationPaste(
+        beforePaste,
+        visible,
+        request.verificationText,
+        request.text
+      )
+    ) {
+      try {
+        record.pty?.write("\r");
+        completeOrchestrationInputDelivery(
+          record.inputBroker,
+          request.operationId,
+          request.payloadHash,
+          "written"
+        );
+        sendDeliveryAck(request, "written", false);
+      } catch {
+        completeOrchestrationInputDelivery(
+          record.inputBroker,
+          request.operationId,
+          request.payloadHash,
+          "unknown"
+        );
+        sendDeliveryAck(request, "unknown", false);
+      }
+      return;
+    }
+    if (Date.now() - startedAt >= 2_000) {
+      completeOrchestrationInputDelivery(
+        record.inputBroker,
+        request.operationId,
+        request.payloadHash,
+        "unknown"
+      );
+      // Unknown means the paste may have landed. Never retransmit or press
+      // Enter automatically after losing proof of the input field.
+      sendDeliveryAck(request, "unknown", false);
+      return;
+    }
+    const timer = setTimeout(check, 25);
+    timer.unref?.();
+  };
+  const timer = setTimeout(check, 25);
+  timer.unref?.();
 }
 
 function handlePtyRequest(
@@ -1844,6 +2076,25 @@ function handlePtyRequest(
           }
           break;
         }
+        if (
+          request.preserveIfDirectInputAfter &&
+          directTerminalInputObservedAtOrAfter(
+            record.inputBroker,
+            request.preserveIfDirectInputAfter
+          )
+        ) {
+          if (request.requestId) {
+            send({
+              type: "close.ack",
+              requestId: request.requestId,
+              sessionId: request.sessionId,
+              surfaceId: record.surfaceId,
+              runtimeEpoch: record.runtimeEpoch,
+              outcome: "input-observed"
+            });
+          }
+          break;
+        }
         if (request.requestId) {
           record.pendingCloseAcks.push({
             requestId: request.requestId,
@@ -1855,18 +2106,116 @@ function handlePtyRequest(
         if (record.exited) {
           disposeSession(record, false);
         } else {
-          record.pty.kill();
+          record.pty?.kill();
         }
       }
       break;
-    case "input:text":
-      sessions.get(request.sessionId)?.pty.write(request.text);
+    case "agent.readiness.register": {
+      const record = sessions.get(request.session.sessionId);
+      if (!isExactGeneration(record, request.session)) {
+        send({
+          type: "agent.readiness.ack",
+          requestId: request.requestId,
+          session: request.session,
+          outcome: "generation-mismatch",
+          receiptId: request.receiptId
+        });
+        break;
+      }
+      const outcome = registerOrchestrationReadiness(record.inputBroker, {
+        authorityRef: request.authorityRef,
+        receiptId: request.receiptId,
+        agentId: request.agentId,
+        agentInstanceId: request.agentInstanceId,
+        readyEpoch: request.readyEpoch
+      });
+      if (outcome === "fenced") {
+        send({
+          type: "agent.readiness.ack",
+          requestId: request.requestId,
+          session: request.session,
+          outcome: "fenced",
+          receiptId: request.receiptId
+        });
+        break;
+      }
+      send({
+        type: "agent.readiness.ack",
+        requestId: request.requestId,
+        session: request.session,
+        outcome: "registered",
+        receiptId: request.receiptId
+      });
       break;
-    case "input:key":
-      sessions
-        .get(request.sessionId)
-        ?.pty.write(encodeTerminalKeyInput(request.input));
+    }
+    case "input:orchestrated": {
+      const record = sessions.get(request.session.sessionId);
+      if (!isExactGeneration(record, request.session)) {
+        sendDeliveryAck(request, "generation-mismatch", false);
+        break;
+      }
+      const beforePaste = record.serialize.serialize({ scrollback: 0 });
+      const delivery = deliverOrchestrationInput(
+        record.inputBroker,
+        request,
+        (text) =>
+          record.pty?.write(
+            request.encoding === "orchestration-result-json"
+              ? `\u001e${JSON.stringify({ operationId: request.operationId, payloadHash: request.payloadHash, readyEpoch: request.readyEpoch, text })}\n`
+              : `\u001b[200~${text}\u001b[201~`
+          )
+      );
+      if (delivery.outcome === "accepted") {
+        verifyPastedInput(record, request, beforePaste);
+      } else {
+        sendDeliveryAck(request, delivery.outcome, delivery.replay);
+      }
       break;
+    }
+    case "input:delivery.query": {
+      const record = sessions.get(request.session.sessionId);
+      if (!isExactGeneration(record, request.session)) {
+        send({
+          type: "input.delivery.status",
+          requestId: request.requestId,
+          session: request.session,
+          operationId: request.operationId,
+          payloadHash: request.payloadHash,
+          outcome: record ? "generation-mismatch" : "unknown"
+        });
+        break;
+      }
+      send({
+        type: "input.delivery.status",
+        requestId: request.requestId,
+        session: request.session,
+        operationId: request.operationId,
+        payloadHash: request.payloadHash,
+        outcome: queryOrchestrationDelivery(
+          record.inputBroker,
+          request.operationId,
+          request.payloadHash
+        )
+      });
+      break;
+    }
+    case "input:text": {
+      const record = sessions.get(request.sessionId);
+      if (record) {
+        if (!isTerminalFocusReport(request.text))
+          observeDirectTerminalInput(record.inputBroker);
+        record.pty?.write(request.text);
+      }
+      break;
+    }
+    case "input:key": {
+      const record = sessions.get(request.sessionId);
+      if (record) {
+        observeDirectTerminalInput(record.inputBroker);
+        record.pty?.write(encodeTerminalKeyInput(request.input));
+      }
+      break;
+    }
     case "snapshot": {
       const record = sessions.get(request.sessionId);
       if (record) {
@@ -1961,6 +2310,25 @@ function finalizeSessionExit(record: SessionRuntime, exitCode?: number): void {
   record.exited = true;
   record.exitCode = exitCode;
   record.stream.exit(exitCode);
+  if (record.commandCapture) {
+    send({
+      type: "orchestration.command.exit",
+      operationId: record.commandCapture.operationId,
+      session: {
+        sessionId: record.sessionId,
+        surfaceId: record.surfaceId,
+        runtimeEpoch: record.runtimeEpoch
+      },
+      exitCode: exitCode ?? -1,
+      ...(record.commandCapture.jsonStdout?.read() ?? {
+        output: record.commandCapture.chunks.join(""),
+        outputBytes: record.commandCapture.outputBytes,
+        truncated: record.commandCapture.truncated
+      })
+    });
+  }
+  record.commandCapture?.jsonStdout?.close();
+  record.commandCapture = undefined;
   send({
     type: "exit",
     payload: {
@@ -1974,6 +2342,29 @@ function finalizeSessionExit(record: SessionRuntime, exitCode?: number): void {
   }
 }
 
+function orchestrationCommandCapture(
+  launchEnv: Record<string, string> | undefined
+): SessionRuntime["commandCapture"] {
+  const operationId = launchEnv?.KMUX_ORCHESTRATION_COMMAND_ID;
+  const maximum = Number(launchEnv?.KMUX_ORCHESTRATION_COMMAND_MAX_BYTES);
+  if (
+    !operationId ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(operationId) ||
+    !Number.isSafeInteger(maximum) ||
+    maximum < 1 ||
+    maximum > 64 * 1024 * 1024
+  ) {
+    return undefined;
+  }
+  return {
+    operationId,
+    maxOutputBytes: maximum,
+    chunks: [],
+    outputBytes: 0,
+    truncated: false
+  };
+}
+
 function disposeSession(record: SessionRuntime, killPty: boolean): void {
   if (sessions.get(record.sessionId) !== record) {
     return;
@@ -1981,6 +2372,7 @@ function disposeSession(record: SessionRuntime, killPty: boolean): void {
   // Fence asynchronous headless-write callbacks before releasing the ring or
   // allowing the same logical session id to spawn with a new runtime epoch.
   sessions.delete(record.sessionId);
+  record.commandCapture?.jsonStdout?.close();
   for (const acknowledgement of record.pendingCloseAcks.splice(0)) {
     send({
       type: "close.ack",
@@ -2006,7 +2398,7 @@ function disposeSession(record: SessionRuntime, killPty: boolean): void {
   disposeHeadlessTerminalIfIdle(record);
   if (killPty && !record.exited) {
     try {
-      record.pty.kill();
+      record.pty?.kill();
     } catch (error) {
       logDiagnostics("pty-host.session.kill.failed", {
         surfaceId: record.surfaceId,

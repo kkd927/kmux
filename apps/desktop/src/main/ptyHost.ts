@@ -12,7 +12,11 @@ import type {
   TerminalKeyInput
 } from "@kmux/proto";
 import { makeId } from "@kmux/proto";
-import type { PtyEvent, PtyRequest } from "../shared/ptyProtocol";
+import type {
+  PtyEvent,
+  PtyGenerationRef,
+  PtyRequest
+} from "../shared/ptyProtocol";
 import type { DiagnosticsRecord } from "../shared/diagnostics";
 import {
   applyDiagnosticsLogPath,
@@ -87,7 +91,9 @@ interface PendingStop {
 
 interface PendingSessionClose {
   session: TerminalSessionRef;
-  resolve: (outcome: "terminated" | "already-exited") => void;
+  resolve: (
+    outcome: "terminated" | "already-exited" | "input-observed"
+  ) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
 }
@@ -112,6 +118,30 @@ export class PtyHostManager extends EventEmitter {
   private readonly queuedRequests = new Map<Id, PtyRequest[]>();
   private readonly queuedInputRequests = new Map<Id, PtyRequest[]>();
   private readonly sessionRefs = new Map<Id, TerminalSessionRef>();
+  private readonly sessionPids = new Map<Id, number>();
+  private readonly pendingSessionPids = new Map<
+    Id,
+    Array<{
+      resolve: (pid: number) => void;
+      reject: (error: Error) => void;
+      timeout: ReturnType<typeof setTimeout>;
+    }>
+  >();
+  private readonly commandExitResults = new Map<
+    Id,
+    Extract<PtyEvent, { type: "orchestration.command.exit" }>
+  >();
+  private readonly pendingCommandExits = new Map<
+    Id,
+    {
+      session: PtyGenerationRef;
+      resolve: (
+        event: Extract<PtyEvent, { type: "orchestration.command.exit" }>
+      ) => void;
+      reject: (error: Error) => void;
+      timeout?: ReturnType<typeof setTimeout>;
+    }
+  >();
   private readonly pendingDiagnosticsConfigurations = new Map<
     Id,
     {
@@ -120,6 +150,14 @@ export class PtyHostManager extends EventEmitter {
     }
   >();
   private readonly pendingSessionCloses = new Map<Id, PendingSessionClose>();
+  private readonly pendingOrchestrationControls = new Map<
+    Id,
+    {
+      resolve: (event: PtyEvent) => void;
+      reject: (error: Error) => void;
+      timeout: ReturnType<typeof setTimeout>;
+    }
+  >();
   constructor(private readonly forkProcess: ForkPtyHostProcess) {
     super();
   }
@@ -203,6 +241,14 @@ export class PtyHostManager extends EventEmitter {
         this.resolvePendingSnapshot(event.requestId, event.payload);
         return;
       }
+      if (
+        event.type === "agent.readiness.ack" ||
+        event.type === "input.delivery.ack" ||
+        event.type === "input.delivery.status"
+      ) {
+        this.resolveOrchestrationControl(event.requestId, event);
+        return;
+      }
       if (event.type === "close.ack") {
         const pending = this.pendingSessionCloses.get(event.requestId);
         if (!pending) return;
@@ -219,12 +265,26 @@ export class PtyHostManager extends EventEmitter {
           );
           return;
         }
-        this.sessionRefs.delete(event.sessionId);
-        this.exitedSessions.delete(event.sessionId);
+        if (event.outcome !== "input-observed") {
+          this.sessionRefs.delete(event.sessionId);
+          this.exitedSessions.delete(event.sessionId);
+          this.rejectCommandExitWaiters(event.sessionId);
+        }
         pending.resolve(event.outcome);
         return;
       }
+      if (event.type === "history.ready") {
+        this.readySessions.add(event.sessionId);
+        this.flushQueuedRequests(event.sessionId);
+      }
       if (event.type === "spawned") {
+        this.sessionPids.set(event.sessionId, event.pid);
+        for (const pending of this.pendingSessionPids.get(event.sessionId) ??
+          []) {
+          clearTimeout(pending.timeout);
+          pending.resolve(event.pid);
+        }
+        this.pendingSessionPids.delete(event.sessionId);
         this.readySessions.add(event.sessionId);
         this.flushQueuedRequests(event.sessionId);
         if (event.shellInputReady) {
@@ -236,14 +296,38 @@ export class PtyHostManager extends EventEmitter {
         this.inputReadySessions.add(event.sessionId);
         this.flushQueuedInputRequests(event.sessionId);
       }
+      if (event.type === "orchestration.command.exit") {
+        const pending = this.pendingCommandExits.get(event.operationId);
+        if (pending) {
+          this.pendingCommandExits.delete(event.operationId);
+          clearTimeout(pending.timeout);
+          if (
+            pending.session.sessionId !== event.session.sessionId ||
+            pending.session.surfaceId !== event.session.surfaceId ||
+            pending.session.runtimeEpoch !== event.session.runtimeEpoch
+          ) {
+            pending.reject(
+              new Error(
+                "managed command exit came from another terminal generation"
+              )
+            );
+          } else {
+            pending.resolve(event);
+          }
+        } else {
+          this.commandExitResults.set(event.operationId, event);
+        }
+      }
       if (event.type === "exit") {
         const sessionId = event.payload.sessionId;
+        this.rejectCommandExitWaiters(sessionId);
         this.exitedSessions.add(sessionId);
         this.inputReadySessions.delete(sessionId);
         this.queuedInputRequests.delete(sessionId);
       } else if (event.type === "error") {
         const sessionId = event.sessionId;
         if (sessionId) {
+          this.rejectCommandExitWaiters(sessionId);
           this.sessionRefs.delete(sessionId);
           this.exitedSessions.delete(sessionId);
           this.readySessions.delete(sessionId);
@@ -448,7 +532,30 @@ export class PtyHostManager extends EventEmitter {
       );
     }
     this.pendingSessionCloses.clear();
+    for (const pending of this.pendingOrchestrationControls.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(
+        new Error(
+          "pty-host exited before orchestration control acknowledgement"
+        )
+      );
+    }
+    this.pendingOrchestrationControls.clear();
+    this.rejectCommandExitWaiters();
+    this.commandExitResults.clear();
     this.flushPendingSnapshots();
+  }
+
+  private rejectCommandExitWaiters(sessionId?: Id): void {
+    for (const [operationId, pending] of this.pendingCommandExits) {
+      if (sessionId !== undefined && pending.session.sessionId !== sessionId)
+        continue;
+      this.pendingCommandExits.delete(operationId);
+      clearTimeout(pending.timeout);
+      pending.reject(
+        new Error("managed command session ended before an exit receipt")
+      );
+    }
   }
 
   send(message: PtyRequest): void {
@@ -518,6 +625,19 @@ export class PtyHostManager extends EventEmitter {
         pending.reject(new Error(message));
       }
     }
+    if (
+      (request.type === "agent.readiness.register" ||
+        request.type === "input:orchestrated" ||
+        request.type === "input:delivery.query") &&
+      request.requestId
+    ) {
+      const pending = this.pendingOrchestrationControls.get(request.requestId);
+      if (pending) {
+        this.pendingOrchestrationControls.delete(request.requestId);
+        clearTimeout(pending.timeout);
+        pending.reject(new Error(message));
+      }
+    }
     const sessionId = requestSessionId(request);
     this.emit("event", {
       type: "error",
@@ -551,8 +671,18 @@ export class PtyHostManager extends EventEmitter {
 
   closeSessionGeneration(
     session: TerminalSessionRef,
-    timeoutMs = 10_000
-  ): Promise<"terminated" | "already-exited"> {
+    timeoutMs?: number
+  ): Promise<"terminated" | "already-exited">;
+  closeSessionGeneration(
+    session: TerminalSessionRef,
+    timeoutMs: number,
+    preserveIfDirectInputAfter: string
+  ): Promise<"terminated" | "already-exited" | "input-observed">;
+  closeSessionGeneration(
+    session: TerminalSessionRef,
+    timeoutMs = 10_000,
+    preserveIfDirectInputAfter?: string
+  ): Promise<"terminated" | "already-exited" | "input-observed"> {
     const current = this.sessionRef(session.surfaceId, session.sessionId);
     if (!current) return Promise.resolve("already-exited");
     if (current.epoch !== session.epoch) {
@@ -578,7 +708,8 @@ export class PtyHostManager extends EventEmitter {
         requestId,
         sessionId: session.sessionId,
         surfaceId: session.surfaceId,
-        expectedRuntimeEpoch: session.epoch
+        expectedRuntimeEpoch: session.epoch,
+        ...(preserveIfDirectInputAfter ? { preserveIfDirectInputAfter } : {})
       });
     });
   }
@@ -679,6 +810,218 @@ export class PtyHostManager extends EventEmitter {
     this.sendWhenInputReady(sessionId, { type: "input:text", sessionId, text });
   }
 
+  waitForInputReady(
+    session: TerminalSessionRef,
+    timeoutMs = 30_000
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const finish = (error?: Error) => {
+        clearTimeout(timeout);
+        this.off("event", check);
+        if (error) reject(error);
+        else resolve();
+      };
+      const check = () => {
+        const current = this.sessionRef(session.surfaceId, session.sessionId);
+        if (
+          !this.child ||
+          current?.epoch !== session.epoch ||
+          this.exitedSessions.has(session.sessionId)
+        ) {
+          finish(
+            new Error(
+              "terminal generation changed before shell input became ready"
+            )
+          );
+        } else if (this.inputReadySessions.has(session.sessionId)) {
+          finish();
+        }
+      };
+      const timeout = setTimeout(
+        () => finish(new Error("timed out waiting for shell input readiness")),
+        timeoutMs
+      );
+      timeout.unref?.();
+      this.on("event", check);
+      check();
+    });
+  }
+
+  registerAgentReadiness(input: {
+    session: PtyGenerationRef;
+    authorityRef: Id;
+    receiptId: Id;
+    agentId: Id;
+    agentInstanceId: Id;
+    readyEpoch: Id;
+  }): Promise<Extract<PtyEvent, { type: "agent.readiness.ack" }>> {
+    return this.sendOrchestrationControl({
+      type: "agent.readiness.register",
+      requestId: makeId("pty-agent-ready"),
+      ...input
+    });
+  }
+
+  sessionPid(sessionId: Id): number | undefined {
+    return this.sessionPids.get(sessionId);
+  }
+
+  waitForSessionPid(sessionId: Id, timeoutMs = 10_000): Promise<number> {
+    const existing = this.sessionPids.get(sessionId);
+    if (existing !== undefined) return Promise.resolve(existing);
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        const pending = this.pendingSessionPids.get(sessionId) ?? [];
+        this.pendingSessionPids.set(
+          sessionId,
+          pending.filter((entry) => entry.resolve !== resolve)
+        );
+        reject(new Error("timed out waiting for managed terminal process"));
+      }, timeoutMs);
+      timeout.unref?.();
+      const pending = this.pendingSessionPids.get(sessionId) ?? [];
+      pending.push({ resolve, reject, timeout });
+      this.pendingSessionPids.set(sessionId, pending);
+    });
+  }
+
+  waitForCommandExit(input: {
+    operationId: Id;
+    session: PtyGenerationRef;
+    timeoutMs?: number;
+  }): Promise<Extract<PtyEvent, { type: "orchestration.command.exit" }>> {
+    const existing = this.commandExitResults.get(input.operationId);
+    if (existing) {
+      this.commandExitResults.delete(input.operationId);
+      if (
+        existing.session.sessionId !== input.session.sessionId ||
+        existing.session.surfaceId !== input.session.surfaceId ||
+        existing.session.runtimeEpoch !== input.session.runtimeEpoch
+      ) {
+        return Promise.reject(
+          new Error(
+            "managed command result belongs to another terminal generation"
+          )
+        );
+      }
+      return Promise.resolve(existing);
+    }
+    if (this.pendingCommandExits.has(input.operationId)) {
+      return Promise.reject(
+        new Error("managed command exit already has a waiter")
+      );
+    }
+    return new Promise((resolve, reject) => {
+      const timeout =
+        input.timeoutMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              this.pendingCommandExits.delete(input.operationId);
+              reject(new Error("timed out waiting for managed command exit"));
+            }, input.timeoutMs);
+      timeout?.unref?.();
+      this.pendingCommandExits.set(input.operationId, {
+        session: input.session,
+        resolve,
+        reject,
+        timeout
+      });
+    });
+  }
+
+  deliverOrchestratedInput(input: {
+    session: PtyGenerationRef;
+    authorityRef: Id;
+    readinessReceiptId: Id;
+    readyEpoch: Id;
+    operationId: Id;
+    payloadHash: string;
+    text: string;
+    verificationText: string;
+    encoding?: "orchestration-result-json";
+  }): Promise<Extract<PtyEvent, { type: "input.delivery.ack" }>> {
+    return this.sendOrchestrationControl(
+      {
+        type: "input:orchestrated",
+        requestId: makeId("pty-delivery"),
+        ...input
+      },
+      true
+    );
+  }
+
+  queryOrchestratedDelivery(input: {
+    session: PtyGenerationRef;
+    operationId: Id;
+    payloadHash: string;
+  }): Promise<Extract<PtyEvent, { type: "input.delivery.status" }>> {
+    return this.sendOrchestrationControl({
+      type: "input:delivery.query",
+      requestId: makeId("pty-delivery-query"),
+      ...input
+    });
+  }
+
+  private sendOrchestrationControl<
+    TEvent extends Extract<
+      PtyEvent,
+      {
+        type:
+          | "agent.readiness.ack"
+          | "input.delivery.ack"
+          | "input.delivery.status";
+      }
+    >
+  >(request: PtyRequest, requireInputReady = false): Promise<TEvent> {
+    const requestId =
+      "requestId" in request && typeof request.requestId === "string"
+        ? request.requestId
+        : undefined;
+    const sessionId = requestSessionId(request);
+    if (!requestId || !sessionId) {
+      return Promise.reject(
+        new Error("orchestration PTY control requires request and session IDs")
+      );
+    }
+    return new Promise<TEvent>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingOrchestrationControls.delete(requestId);
+        this.removeQueuedRequest(requestId);
+        reject(
+          new Error("timed out waiting for orchestration PTY acknowledgement")
+        );
+      }, 5_000);
+      this.pendingOrchestrationControls.set(requestId, {
+        resolve: (event) => {
+          if (!isMatchingOrchestrationControlAck(request, event)) {
+            reject(
+              new Error(
+                "orchestration PTY acknowledgement does not match its request"
+              )
+            );
+            return;
+          }
+          resolve(event as TEvent);
+        },
+        reject,
+        timeout
+      });
+      if (requireInputReady) {
+        this.sendWhenInputReady(sessionId, request);
+      } else {
+        this.sendWhenReady(sessionId, request);
+      }
+    });
+  }
+
+  private resolveOrchestrationControl(requestId: Id, event: PtyEvent): void {
+    const pending = this.pendingOrchestrationControls.get(requestId);
+    if (!pending) return;
+    this.pendingOrchestrationControls.delete(requestId);
+    clearTimeout(pending.timeout);
+    pending.resolve(event);
+  }
+
   sendKey(sessionId: Id, input: TerminalKeyInput): void {
     this.sendWhenInputReady(sessionId, { type: "input:key", sessionId, input });
   }
@@ -724,6 +1067,20 @@ export class PtyHostManager extends EventEmitter {
       this.send(request);
     }
   }
+
+  private removeQueuedRequest(requestId: Id): void {
+    for (const queue of [this.queuedRequests, this.queuedInputRequests]) {
+      for (const [sessionId, requests] of queue) {
+        const remaining = requests.filter(
+          (request) =>
+            !("requestId" in request && request.requestId === requestId)
+        );
+        if (remaining.length === requests.length) continue;
+        if (remaining.length === 0) queue.delete(sessionId);
+        else queue.set(sessionId, remaining);
+      }
+    }
+  }
 }
 
 function requestSessionId(request: PtyRequest): Id | undefined {
@@ -733,8 +1090,13 @@ function requestSessionId(request: PtyRequest): Id | undefined {
     case "close":
     case "input:text":
     case "input:key":
+    case "agent.readiness.register":
+    case "input:orchestrated":
+    case "input:delivery.query":
     case "snapshot":
-      return request.sessionId;
+      return "session" in request
+        ? request.session.sessionId
+        : request.sessionId;
     case "stream.bind":
       return request.session.sessionId;
     case "diagnostics.configure":
@@ -742,6 +1104,60 @@ function requestSessionId(request: PtyRequest): Id | undefined {
     case "shutdown":
       return undefined;
   }
+}
+
+function isMatchingOrchestrationControlAck(
+  request: PtyRequest,
+  event: PtyEvent
+): boolean {
+  if (
+    !("requestId" in request) ||
+    !("requestId" in event) ||
+    request.requestId !== event.requestId
+  ) {
+    return false;
+  }
+  if (
+    request.type === "agent.readiness.register" &&
+    event.type === "agent.readiness.ack"
+  ) {
+    return (
+      sameGeneration(request.session, event.session) &&
+      request.receiptId === event.receiptId
+    );
+  }
+  if (
+    request.type === "input:orchestrated" &&
+    event.type === "input.delivery.ack"
+  ) {
+    return (
+      sameGeneration(request.session, event.session) &&
+      request.operationId === event.operationId &&
+      request.payloadHash === event.payloadHash
+    );
+  }
+  if (
+    request.type === "input:delivery.query" &&
+    event.type === "input.delivery.status"
+  ) {
+    return (
+      sameGeneration(request.session, event.session) &&
+      request.operationId === event.operationId &&
+      request.payloadHash === event.payloadHash
+    );
+  }
+  return false;
+}
+
+function sameGeneration(
+  left: PtyGenerationRef,
+  right: PtyGenerationRef
+): boolean {
+  return (
+    left.sessionId === right.sessionId &&
+    left.surfaceId === right.surfaceId &&
+    left.runtimeEpoch === right.runtimeEpoch
+  );
 }
 
 function normalizeSettleDuration(value: number | undefined): number {

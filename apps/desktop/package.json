@@ -24,6 +24,12 @@
     "preview": "electron-vite preview --config electron.vite.config.ts"
   },
   "dependencies": {
+    "@douyinfe/semi-icons": "2.103.0",
+    "@douyinfe/semi-ui": "2.103.0",
+    "@flowgram.ai/core": "^1.0.14",
+    "@flowgram.ai/form-materials": "1.0.14",
+    "@flowgram.ai/free-container-plugin": "^1.0.14",
+    "@flowgram.ai/free-layout-editor": "^1.0.14",
     "@streamdown/cjk": "^1.0.3",
     "@streamdown/code": "^1.1.1",
     "@streamdown/math": "^1.0.2",
@@ -46,6 +52,7 @@
     "react-dom": "^18.3.1",
     "rehype-harden": "^1.1.8",
     "streamdown": "^2.5.0",
+    "styled-components": "^6.5.3",
     "zod": "^3.24.4"
   },
   "optionalDependencies": {

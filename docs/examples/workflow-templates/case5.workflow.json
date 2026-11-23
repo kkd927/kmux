@@ -1,0 +1,1406 @@
+{
+  "documentVersion": 1,
+  "workflow": {
+    "schemaVersion": 1,
+    "definitionId": "template:developer-5",
+    "version": 1,
+    "name": "5. Issue → 재현 → 수정·리뷰 → PR 초안",
+    "inputs": [
+      {
+        "id": "task",
+        "required": false,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "default": "Resolve the supplied issue within its stated scope."
+      },
+      {
+        "id": "acceptanceCriteria",
+        "required": false,
+        "schema": {
+          "schema": {
+            "type": "string"
+          }
+        },
+        "default": ""
+      },
+      {
+        "id": "constraints",
+        "required": false,
+        "schema": {
+          "schema": {
+            "type": "string"
+          }
+        },
+        "default": ""
+      },
+      {
+        "id": "validationCommand",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "id": "reportDirectory",
+        "required": false,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "pattern": "^(?:$|/)"
+          }
+        },
+        "default": ""
+      },
+      {
+        "id": "issue",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "id": "draftPath",
+        "required": false,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "default": "PR-DRAFT.md"
+      },
+      {
+        "id": "issueAgent",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "id": "implementationAgent",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      {
+        "id": "reviewAgent",
+        "required": true,
+        "schema": {
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "id": "reviewResult",
+        "required": false,
+        "source": {
+          "kind": "node-result",
+          "nodeId": "review-loop"
+        }
+      },
+      {
+        "id": "issue",
+        "required": true,
+        "source": {
+          "kind": "node-result",
+          "nodeId": "read-issue"
+        }
+      },
+      {
+        "id": "prDraft",
+        "required": false,
+        "source": {
+          "kind": "node-result",
+          "nodeId": "draft-pr"
+        }
+      }
+    ],
+    "agentBindings": {
+      "issueAgent": {
+        "agent": {
+          "kind": "run-input",
+          "inputId": "issueAgent"
+        },
+        "scope": {
+          "kind": "run"
+        },
+        "authorityMode": "ambient",
+        "capabilities": [
+          "terminal"
+        ],
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      },
+      "implementationAgent": {
+        "agent": {
+          "kind": "run-input",
+          "inputId": "implementationAgent"
+        },
+        "scope": {
+          "kind": "run"
+        },
+        "authorityMode": "ambient",
+        "capabilities": [
+          "terminal"
+        ],
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      },
+      "reviewAgent": {
+        "agent": {
+          "kind": "run-input",
+          "inputId": "reviewAgent"
+        },
+        "scope": {
+          "kind": "run"
+        },
+        "authorityMode": "ambient",
+        "capabilities": [
+          "terminal"
+        ],
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      },
+      "reviewRound": {
+        "agent": {
+          "kind": "run-input",
+          "inputId": "reviewAgent"
+        },
+        "scope": {
+          "kind": "loop-iteration",
+          "loopNodeId": "review-loop"
+        },
+        "authorityMode": "ambient",
+        "capabilities": [
+          "terminal"
+        ],
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      },
+      "correctionRound": {
+        "agent": {
+          "kind": "run-input",
+          "inputId": "implementationAgent"
+        },
+        "scope": {
+          "kind": "loop-iteration",
+          "loopNodeId": "review-loop"
+        },
+        "authorityMode": "ambient",
+        "capabilities": [
+          "terminal"
+        ],
+        "targetPolicy": "local",
+        "surfacePolicy": "create",
+        "sessionPolicy": "fresh",
+        "worktreePolicy": "current",
+        "inputMode": "orchestrated"
+      }
+    },
+    "policies": {
+      "limits": {
+        "maxNodes": 128,
+        "maxEdges": 512,
+        "maxGraphDepth": 32,
+        "maxFanOut": 16,
+        "maxLoopIterations": 12,
+        "maxActiveAttempts": 3,
+        "maxAttemptsPerSession": 8,
+        "maxDispatches": 128,
+        "maxCoordinatorTurns": 32,
+        "maxGraphPatches": 128,
+        "maxWallClockMs": 86400000,
+        "maxActiveExecutionMs": 43200000,
+        "maxArtifactBytes": 536870912,
+        "maxStructuredResultBytes": 8388608
+      },
+      "failure": "fail-run",
+      "cancellation": "cancel-active"
+    },
+    "description": "Read an Issue URL/reference or supplied text, establish reproduction, fix and review, then prepare a local PR draft."
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "position": {
+        "x": 120,
+        "y": 452
+      },
+      "definition": {
+        "id": "start",
+        "kind": "start",
+        "title": "Start",
+        "config": {
+          "version": 1
+        }
+      }
+    },
+    {
+      "id": "read-issue",
+      "position": {
+        "x": 580,
+        "y": 271
+      },
+      "definition": {
+        "id": "read-issue",
+        "kind": "agent",
+        "title": "Read the supplied Issue",
+        "config": {
+          "version": 1,
+          "agentRef": "issueAgent",
+          "prompt": "Read issue from resolved inputs. If it is an Issue URL/reference, retrieve it through the available authenticated read-only GitHub tools; otherwise preserve the supplied text. Return data {title,body,url} with the complete useful issue content. Do not publish or invent unavailable issue details. Report a blocker if retrieval is required but unavailable.\n\nUse the resolved inputs and the project conventions in the assigned working directory. Preserve unrelated edits. Treat task, acceptanceCriteria and constraints as the scope; do not invent extra requirements. Execute validationCommand when this stage calls for validation and report exact commands and actual outcomes.\nReturn data matching the declared result schema. When it declares summary, data.summary must contain the complete useful plan, decisions or work result and executed checks needed by the next stage. Report work performed, findings, validation and remaining work in your explicit completion result. Include the full useful result, not just a terminal pointer or a report path. If reportDirectory is nonempty, write a unique report using this Run/Task identity to that user-supplied absolute directory outside the working tree and attach its path. Otherwise return the report in the completion result without inventing a filesystem location. Do not commit, push or publish unless the stage explicitly asks for a local commit or merge. For a blocker, ask the Coordinator or fail the Task truthfully.",
+          "lifecycleMode": "managed",
+          "coding": false
+        },
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "acceptanceCriteria",
+            "source": {
+              "kind": "run-input",
+              "inputId": "acceptanceCriteria"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "constraints",
+            "source": {
+              "kind": "run-input",
+              "inputId": "constraints"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validationCommand",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reportDirectory",
+            "source": {
+              "kind": "run-input",
+              "inputId": "reportDirectory"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "issue",
+            "source": {
+              "kind": "run-input",
+              "inputId": "issue"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "title",
+              "body",
+              "url"
+            ],
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "body": {
+                "type": "string",
+                "minLength": 1
+              },
+              "url": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "reproduce",
+      "position": {
+        "x": 1040,
+        "y": 271
+      },
+      "definition": {
+        "id": "reproduce",
+        "kind": "agent",
+        "title": "Establish the failing behavior",
+        "config": {
+          "version": 1,
+          "agentRef": "implementationAgent",
+          "prompt": "Use the complete resolved issue. Reproduce the reported behavior with an actual command or a focused regression test. You may add a reproduction test but must not change production behavior yet. Return data {reproduced,trigger,expected,actual}; reproduced=true requires actual observed evidence. Record why reproduction is unavailable rather than inventing one.\n\nUse the resolved inputs and the project conventions in the assigned working directory. Preserve unrelated edits. Treat task, acceptanceCriteria and constraints as the scope; do not invent extra requirements. Execute validationCommand when this stage calls for validation and report exact commands and actual outcomes.\nReturn data matching the declared result schema. When it declares summary, data.summary must contain the complete useful plan, decisions or work result and executed checks needed by the next stage. Report work performed, findings, validation and remaining work in your explicit completion result. Include the full useful result, not just a terminal pointer or a report path. If reportDirectory is nonempty, write a unique report using this Run/Task identity to that user-supplied absolute directory outside the working tree and attach its path. Otherwise return the report in the completion result without inventing a filesystem location. Do not commit, push or publish unless the stage explicitly asks for a local commit or merge. For a blocker, ask the Coordinator or fail the Task truthfully.",
+          "lifecycleMode": "managed",
+          "coding": true
+        },
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "acceptanceCriteria",
+            "source": {
+              "kind": "run-input",
+              "inputId": "acceptanceCriteria"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "constraints",
+            "source": {
+              "kind": "run-input",
+              "inputId": "constraints"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validationCommand",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reportDirectory",
+            "source": {
+              "kind": "run-input",
+              "inputId": "reportDirectory"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "issue",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "read-issue"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "reproduced",
+              "trigger",
+              "expected",
+              "actual"
+            ],
+            "properties": {
+              "reproduced": {
+                "type": "boolean"
+              },
+              "trigger": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expected": {
+                "type": "string",
+                "minLength": 1
+              },
+              "actual": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "reproduced",
+      "position": {
+        "x": 1500,
+        "y": 452
+      },
+      "definition": {
+        "id": "reproduced",
+        "kind": "condition",
+        "title": "Issue reproduced?",
+        "config": {
+          "version": 1,
+          "expressionVersion": 1,
+          "expression": "false",
+          "ports": [
+            "yes",
+            "else"
+          ],
+          "conditions": [
+            {
+              "key": "yes",
+              "left": {
+                "kind": "node-result",
+                "nodeId": "reproduce",
+                "path": [
+                  "reproduced"
+                ]
+              },
+              "operator": "eq",
+              "right": {
+                "kind": "literal",
+                "value": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "reproduction-stop",
+      "position": {
+        "x": 1960,
+        "y": 204
+      },
+      "definition": {
+        "id": "reproduction-stop",
+        "kind": "human-gate",
+        "title": "Reproduction requires attention",
+        "config": {
+          "version": 1,
+          "question": "No confirmed reproduction was established. Inspect the issue and reproduction result, then stop to supply missing information. Do not proceed to a fix or PR draft.",
+          "resolutions": [
+            "stop"
+          ],
+          "approverPolicy": "local-user"
+        },
+        "inputMappings": [
+          {
+            "target": "issue",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "read-issue"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reproduction",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "reproduce"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fix",
+      "position": {
+        "x": 1960,
+        "y": 338
+      },
+      "definition": {
+        "id": "fix",
+        "kind": "agent",
+        "title": "Fix the confirmed reproduction",
+        "config": {
+          "version": 1,
+          "agentRef": "implementationAgent",
+          "prompt": "Fix the actual reproduced issue within task and constraints. Preserve or add a regression test proving the observed failure becomes correct behavior. Run validationCommand and record exact before/after evidence. Keep the full issue context; do not expand the issue into unrelated changes.\n\nUse the resolved inputs and the project conventions in the assigned working directory. Preserve unrelated edits. Treat task, acceptanceCriteria and constraints as the scope; do not invent extra requirements. Execute validationCommand when this stage calls for validation and report exact commands and actual outcomes.\nReturn data matching the declared result schema. When it declares summary, data.summary must contain the complete useful plan, decisions or work result and executed checks needed by the next stage. Report work performed, findings, validation and remaining work in your explicit completion result. Include the full useful result, not just a terminal pointer or a report path. If reportDirectory is nonempty, write a unique report using this Run/Task identity to that user-supplied absolute directory outside the working tree and attach its path. Otherwise return the report in the completion result without inventing a filesystem location. Do not commit, push or publish unless the stage explicitly asks for a local commit or merge. For a blocker, ask the Coordinator or fail the Task truthfully.",
+          "lifecycleMode": "managed",
+          "coding": true
+        },
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "acceptanceCriteria",
+            "source": {
+              "kind": "run-input",
+              "inputId": "acceptanceCriteria"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "constraints",
+            "source": {
+              "kind": "run-input",
+              "inputId": "constraints"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validationCommand",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reportDirectory",
+            "source": {
+              "kind": "run-input",
+              "inputId": "reportDirectory"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "issue",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "read-issue"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reproduction",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "reproduce"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "summary"
+            ],
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "final-validation",
+      "position": {
+        "x": 4632,
+        "y": 385
+      },
+      "definition": {
+        "id": "final-validation",
+        "kind": "shell",
+        "title": "Validate before preparing a PR",
+        "inputMappings": [
+          {
+            "target": "command",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "config": {
+          "version": 1,
+          "command": {
+            "kind": "structured",
+            "executable": "/bin/sh",
+            "args": [
+              {
+                "kind": "literal",
+                "value": "-c"
+              },
+              {
+                "kind": "input",
+                "input": "command"
+              }
+            ]
+          },
+          "targetPolicy": "local",
+          "surfacePolicy": "create",
+          "cwdPolicy": "workspace",
+          "resultMode": "exit-code",
+          "maxOutputBytes": 1048576
+        }
+      }
+    },
+    {
+      "id": "draft-pr",
+      "position": {
+        "x": 5092,
+        "y": 271
+      },
+      "definition": {
+        "id": "draft-pr",
+        "kind": "agent",
+        "title": "Write the local PR draft",
+        "config": {
+          "version": 1,
+          "agentRef": "implementationAgent",
+          "prompt": "Write a local PR draft at resolved draftPath, including the actual issue, reproduction before/after, scoped changes, validation receipt and independent review result. Include remaining limitations truthfully. Create the draft only; do not push, create a remote PR or post comments.\n\nUse the resolved inputs and the project conventions in the assigned working directory. Preserve unrelated edits. Treat task, acceptanceCriteria and constraints as the scope; do not invent extra requirements. Execute validationCommand when this stage calls for validation and report exact commands and actual outcomes.\nReturn data matching the declared result schema. When it declares summary, data.summary must contain the complete useful plan, decisions or work result and executed checks needed by the next stage. Report work performed, findings, validation and remaining work in your explicit completion result. Include the full useful result, not just a terminal pointer or a report path. If reportDirectory is nonempty, write a unique report using this Run/Task identity to that user-supplied absolute directory outside the working tree and attach its path. Otherwise return the report in the completion result without inventing a filesystem location. Do not commit, push or publish unless the stage explicitly asks for a local commit or merge. For a blocker, ask the Coordinator or fail the Task truthfully.",
+          "lifecycleMode": "managed",
+          "coding": true
+        },
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "acceptanceCriteria",
+            "source": {
+              "kind": "run-input",
+              "inputId": "acceptanceCriteria"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "constraints",
+            "source": {
+              "kind": "run-input",
+              "inputId": "constraints"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validationCommand",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reportDirectory",
+            "source": {
+              "kind": "run-input",
+              "inputId": "reportDirectory"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "issue",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "read-issue"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reproduction",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "reproduce"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "implementation",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "fix"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "review",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "review-loop"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validation",
+            "source": {
+              "kind": "node-outcome",
+              "nodeId": "final-validation"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "draftPath",
+            "source": {
+              "kind": "run-input",
+              "inputId": "draftPath"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "summary"
+            ],
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "review-loop",
+      "position": {
+        "x": 2420,
+        "y": 120
+      },
+      "definition": {
+        "id": "review-loop",
+        "kind": "loop",
+        "title": "Independent review · up to two fixes",
+        "config": {
+          "version": 1,
+          "mode": "while",
+          "maxIterations": 3,
+          "body": {
+            "nodeIds": [
+              "review",
+              "review-decision",
+              "fix-budget",
+              "correct",
+              "unresolved"
+            ],
+            "entryNodeIds": [
+              "review"
+            ],
+            "exits": [
+              {
+                "nodeId": "review-decision",
+                "port": "clean",
+                "outcome": "clean"
+              },
+              {
+                "nodeId": "correct",
+                "port": "success",
+                "outcome": "repeat"
+              },
+              {
+                "nodeId": "unresolved",
+                "outcome": "unresolved",
+                "action": "continue"
+              }
+            ]
+          },
+          "repeatOutcome": "repeat",
+          "completedOutcomes": [
+            "clean"
+          ],
+          "completedPort": "clean",
+          "maxReachedPort": "limit",
+          "carry": [
+            {
+              "inputId": "previousReview",
+              "initial": {
+                "kind": "literal",
+                "value": null
+              },
+              "next": {
+                "kind": "node-result",
+                "nodeId": "review"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "review",
+      "position": {
+        "x": 80,
+        "y": 171
+      },
+      "definition": {
+        "id": "review",
+        "kind": "agent",
+        "title": "Independent review",
+        "config": {
+          "version": 1,
+          "agentRef": "reviewRound",
+          "prompt": "Read-only review of the CURRENT changes against task, acceptanceCriteria, constraints and project conventions. Use implementation and previousReview from resolved inputs. Rerun every previous concrete reproduction after a correction, plus validationCommand. Do not implement fixes. Return data {findingsCount,findings}; each finding must include an actionable location, evidence and expected/actual behavior. Count all unresolved findings; failed required validation is a finding.\n\nUse the resolved inputs and the project conventions in the assigned working directory. Preserve unrelated edits. Treat task, acceptanceCriteria and constraints as the scope; do not invent extra requirements. Execute validationCommand when this stage calls for validation and report exact commands and actual outcomes.\nReturn data matching the declared result schema. When it declares summary, data.summary must contain the complete useful plan, decisions or work result and executed checks needed by the next stage. Report work performed, findings, validation and remaining work in your explicit completion result. Include the full useful result, not just a terminal pointer or a report path. If reportDirectory is nonempty, write a unique report using this Run/Task identity to that user-supplied absolute directory outside the working tree and attach its path. Otherwise return the report in the completion result without inventing a filesystem location. Do not commit, push or publish unless the stage explicitly asks for a local commit or merge. For a blocker, ask the Coordinator or fail the Task truthfully.",
+          "lifecycleMode": "managed",
+          "coding": false
+        },
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "acceptanceCriteria",
+            "source": {
+              "kind": "run-input",
+              "inputId": "acceptanceCriteria"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "constraints",
+            "source": {
+              "kind": "run-input",
+              "inputId": "constraints"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validationCommand",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reportDirectory",
+            "source": {
+              "kind": "run-input",
+              "inputId": "reportDirectory"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "implementation",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "fix"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "previousReview",
+            "source": {
+              "kind": "loop-carry",
+              "loopNodeId": "review-loop",
+              "inputId": "previousReview"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "issue",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "read-issue"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reproduction",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "reproduce"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "findingsCount",
+              "findings"
+            ],
+            "properties": {
+              "findingsCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "findings": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "review-decision",
+      "position": {
+        "x": 512,
+        "y": 352
+      },
+      "definition": {
+        "id": "review-decision",
+        "kind": "condition",
+        "title": "Unresolved findings?",
+        "config": {
+          "version": 1,
+          "expressionVersion": 1,
+          "expression": "false",
+          "ports": [
+            "fix",
+            "clean"
+          ],
+          "conditions": [
+            {
+              "key": "fix",
+              "left": {
+                "kind": "node-result",
+                "nodeId": "review",
+                "path": [
+                  "findingsCount"
+                ]
+              },
+              "operator": "gt",
+              "right": {
+                "kind": "literal",
+                "value": 0
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fix-budget",
+      "position": {
+        "x": 944,
+        "y": 352
+      },
+      "definition": {
+        "id": "fix-budget",
+        "kind": "condition",
+        "title": "Fix budget remains?",
+        "config": {
+          "version": 1,
+          "expressionVersion": 1,
+          "expression": "false",
+          "ports": [
+            "fix",
+            "else"
+          ],
+          "conditions": [
+            {
+              "key": "fix",
+              "left": {
+                "kind": "loop-index",
+                "loopNodeId": "review-loop"
+              },
+              "operator": "lt",
+              "right": {
+                "kind": "literal",
+                "value": 2
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "correct",
+      "position": {
+        "x": 1376,
+        "y": 120
+      },
+      "definition": {
+        "id": "correct",
+        "kind": "agent",
+        "title": "Apply confirmed review fixes",
+        "config": {
+          "version": 1,
+          "agentRef": "correctionRound",
+          "prompt": "Read the full resolved review. Fact-check its concrete findings against the CURRENT source, fix confirmed in-scope defects, add meaningful regression coverage and run validationCommand. Preserve unrelated changes and explain any finding that cannot be resolved. The independent reviewer will review the result again; do not substitute a self-review.\n\nUse the resolved inputs and the project conventions in the assigned working directory. Preserve unrelated edits. Treat task, acceptanceCriteria and constraints as the scope; do not invent extra requirements. Execute validationCommand when this stage calls for validation and report exact commands and actual outcomes.\nReturn data matching the declared result schema. When it declares summary, data.summary must contain the complete useful plan, decisions or work result and executed checks needed by the next stage. Report work performed, findings, validation and remaining work in your explicit completion result. Include the full useful result, not just a terminal pointer or a report path. If reportDirectory is nonempty, write a unique report using this Run/Task identity to that user-supplied absolute directory outside the working tree and attach its path. Otherwise return the report in the completion result without inventing a filesystem location. Do not commit, push or publish unless the stage explicitly asks for a local commit or merge. For a blocker, ask the Coordinator or fail the Task truthfully.",
+          "lifecycleMode": "managed",
+          "coding": true
+        },
+        "inputMappings": [
+          {
+            "target": "task",
+            "source": {
+              "kind": "run-input",
+              "inputId": "task"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "acceptanceCriteria",
+            "source": {
+              "kind": "run-input",
+              "inputId": "acceptanceCriteria"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "constraints",
+            "source": {
+              "kind": "run-input",
+              "inputId": "constraints"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "validationCommand",
+            "source": {
+              "kind": "run-input",
+              "inputId": "validationCommand"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reportDirectory",
+            "source": {
+              "kind": "run-input",
+              "inputId": "reportDirectory"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "review",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "review"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "issue",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "read-issue"
+            },
+            "required": true,
+            "missing": "fail"
+          },
+          {
+            "target": "reproduction",
+            "source": {
+              "kind": "node-result",
+              "nodeId": "reproduce"
+            },
+            "required": true,
+            "missing": "fail"
+          }
+        ],
+        "resultSchema": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "summary"
+            ],
+            "properties": {
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "unresolved",
+      "position": {
+        "x": 1376,
+        "y": 584
+      },
+      "definition": {
+        "id": "unresolved",
+        "kind": "continue",
+        "title": "Final review still has findings",
+        "config": {
+          "version": 1
+        }
+      }
+    },
+    {
+      "id": "review-limit",
+      "position": {
+        "x": 4632,
+        "y": 1169
+      },
+      "definition": {
+        "id": "review-limit",
+        "kind": "human-gate",
+        "title": "Review budget exceeded",
+        "config": {
+          "version": 1,
+          "question": "Two correction rounds have been used and the final independent review still has findings. Inspect the review result and stop; stopping is not a clean review approval.",
+          "resolutions": [
+            "stop"
+          ],
+          "approverPolicy": "local-user"
+        }
+      }
+    },
+    {
+      "id": "done",
+      "position": {
+        "x": 5552,
+        "y": 452
+      },
+      "definition": {
+        "id": "done",
+        "kind": "end",
+        "title": "Finished / stopped",
+        "config": {
+          "version": 1
+        },
+        "completionRoot": true,
+        "joinPolicy": "any-successful",
+        "anySuccessfulDisposition": "wait"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "start:next:read-issue",
+      "from": {
+        "nodeId": "start"
+      },
+      "to": {
+        "nodeId": "read-issue"
+      }
+    },
+    {
+      "id": "read-issue:next:reproduce",
+      "from": {
+        "nodeId": "read-issue"
+      },
+      "to": {
+        "nodeId": "reproduce"
+      }
+    },
+    {
+      "id": "reproduce:next:reproduced",
+      "from": {
+        "nodeId": "reproduce"
+      },
+      "to": {
+        "nodeId": "reproduced"
+      }
+    },
+    {
+      "id": "reproduced:yes:fix",
+      "from": {
+        "nodeId": "reproduced",
+        "port": "yes"
+      },
+      "to": {
+        "nodeId": "fix"
+      }
+    },
+    {
+      "id": "reproduced:else:reproduction-stop",
+      "from": {
+        "nodeId": "reproduced",
+        "port": "else"
+      },
+      "to": {
+        "nodeId": "reproduction-stop"
+      }
+    },
+    {
+      "id": "reproduction-stop:stop:done",
+      "from": {
+        "nodeId": "reproduction-stop",
+        "port": "stop"
+      },
+      "to": {
+        "nodeId": "done"
+      }
+    },
+    {
+      "id": "final-validation:next:draft-pr",
+      "from": {
+        "nodeId": "final-validation"
+      },
+      "to": {
+        "nodeId": "draft-pr"
+      }
+    },
+    {
+      "id": "draft-pr:next:done",
+      "from": {
+        "nodeId": "draft-pr"
+      },
+      "to": {
+        "nodeId": "done"
+      }
+    },
+    {
+      "id": "fix:next:review-loop",
+      "from": {
+        "nodeId": "fix"
+      },
+      "to": {
+        "nodeId": "review-loop"
+      }
+    },
+    {
+      "id": "review:next:review-decision",
+      "from": {
+        "nodeId": "review"
+      },
+      "to": {
+        "nodeId": "review-decision"
+      }
+    },
+    {
+      "id": "review-decision:fix:fix-budget",
+      "from": {
+        "nodeId": "review-decision",
+        "port": "fix"
+      },
+      "to": {
+        "nodeId": "fix-budget"
+      }
+    },
+    {
+      "id": "fix-budget:fix:correct",
+      "from": {
+        "nodeId": "fix-budget",
+        "port": "fix"
+      },
+      "to": {
+        "nodeId": "correct"
+      }
+    },
+    {
+      "id": "fix-budget:else:unresolved",
+      "from": {
+        "nodeId": "fix-budget",
+        "port": "else"
+      },
+      "to": {
+        "nodeId": "unresolved"
+      }
+    },
+    {
+      "id": "review-loop:clean:final-validation",
+      "from": {
+        "nodeId": "review-loop",
+        "port": "clean"
+      },
+      "to": {
+        "nodeId": "final-validation"
+      }
+    },
+    {
+      "id": "review-loop:limit:review-limit",
+      "from": {
+        "nodeId": "review-loop",
+        "port": "limit"
+      },
+      "to": {
+        "nodeId": "review-limit"
+      }
+    },
+    {
+      "id": "review-limit:stop:done",
+      "from": {
+        "nodeId": "review-limit",
+        "port": "stop"
+      },
+      "to": {
+        "nodeId": "done"
+      }
+    }
+  ]
+}

@@ -1,0 +1,1457 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://kmux.dev/schema/orchestration/canonical-workflow-v1.schema.json",
+  "title": "kmux Canonical Workflow Definition v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "definitionId",
+    "version",
+    "name",
+    "inputs",
+    "outputs",
+    "agentBindings",
+    "nodes",
+    "edges",
+    "policies"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "definitionId": {
+      "$ref": "#/definitions/id"
+    },
+    "version": {
+      "$ref": "#/definitions/positiveInteger"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 8192
+    },
+    "inputs": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/definitions/workflowInput"
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/definitions/workflowOutput"
+      }
+    },
+    "agentBindings": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/definitions/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/definitions/agentBinding"
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 10000,
+      "items": {
+        "$ref": "#/definitions/node"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "$ref": "#/definitions/edge"
+      }
+    },
+    "policies": {
+      "$ref": "#/definitions/workflowPolicies"
+    }
+  },
+  "definitions": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "positiveInteger": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "nonNegativeInteger": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "agentLaunchPreferences": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/+-]*$"
+        },
+        "effort": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/+-]*$"
+        }
+      }
+    },
+    "jsonValue": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/jsonValue"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/jsonValue"
+          }
+        }
+      ]
+    },
+    "jsonSchemaRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "schema": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/jsonValue"
+          }
+        }
+      }
+    },
+    "dataSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "inputId"],
+          "properties": {
+            "kind": {
+              "const": "run-input"
+            },
+            "inputId": {
+              "$ref": "#/definitions/id"
+            },
+            "path": {
+              "$ref": "#/definitions/dataPath"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "loopNodeId"],
+          "properties": {
+            "kind": {
+              "const": "loop-item"
+            },
+            "loopNodeId": {
+              "$ref": "#/definitions/id"
+            },
+            "path": {
+              "$ref": "#/definitions/dataPath"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "loopNodeId", "inputId"],
+          "properties": {
+            "kind": {
+              "const": "loop-carry"
+            },
+            "loopNodeId": {
+              "$ref": "#/definitions/id"
+            },
+            "inputId": {
+              "$ref": "#/definitions/id"
+            },
+            "path": {
+              "$ref": "#/definitions/dataPath"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "nodeId"],
+          "properties": {
+            "kind": {
+              "const": "repository-state"
+            },
+            "nodeId": {
+              "$ref": "#/definitions/id"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "nodeId"],
+          "properties": {
+            "kind": {
+              "const": "node-result"
+            },
+            "nodeId": {
+              "$ref": "#/definitions/id"
+            },
+            "path": {
+              "$ref": "#/definitions/dataPath"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "nodeId"],
+          "properties": {
+            "kind": {
+              "const": "node-outcome"
+            },
+            "nodeId": {
+              "$ref": "#/definitions/id"
+            },
+            "path": {
+              "$ref": "#/definitions/dataPath"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": {
+              "const": "literal"
+            },
+            "value": {
+              "$ref": "#/definitions/jsonValue"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "loopNodeId"],
+          "properties": {
+            "kind": {
+              "const": "loop-index"
+            },
+            "loopNodeId": {
+              "$ref": "#/definitions/id"
+            }
+          }
+        }
+      ]
+    },
+    "dataPath": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      }
+    },
+    "inputMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "source", "required", "missing"],
+      "properties": {
+        "target": {
+          "$ref": "#/definitions/id"
+        },
+        "source": {
+          "$ref": "#/definitions/dataSource"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "missing": {
+          "enum": ["fail", "use-default", "omit"]
+        },
+        "default": {
+          "$ref": "#/definitions/jsonValue"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "missing": {
+                "const": "use-default"
+              }
+            }
+          },
+          "then": {
+            "required": ["default"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "required": {
+                "const": true
+              },
+              "missing": {
+                "const": "omit"
+              }
+            },
+            "required": ["required", "missing"]
+          },
+          "then": false
+        }
+      ]
+    },
+    "workflowInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "required"],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/id"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "schema": {
+          "$ref": "#/definitions/jsonSchemaRef"
+        },
+        "default": {
+          "$ref": "#/definitions/jsonValue"
+        }
+      }
+    },
+    "workflowOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "required", "source"],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/id"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "source": {
+          "$ref": "#/definitions/dataSource"
+        },
+        "schema": {
+          "$ref": "#/definitions/jsonSchemaRef"
+        }
+      }
+    },
+    "agentBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent",
+        "scope",
+        "authorityMode",
+        "targetPolicy",
+        "surfacePolicy",
+        "sessionPolicy",
+        "worktreePolicy",
+        "inputMode"
+      ],
+      "properties": {
+        "agent": {
+          "$ref": "#/definitions/agentSelector"
+        },
+        "scope": {
+          "$ref": "#/definitions/agentBindingScope"
+        },
+        "authorityMode": {
+          "enum": ["restricted", "ambient"]
+        },
+        "capabilities": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/definitions/id"
+          }
+        },
+        "launch": {
+          "$ref": "#/definitions/agentLaunchPreferences"
+        },
+        "targetPolicy": {
+          "enum": ["local", "selected", "workflow-input"]
+        },
+        "targetRef": {
+          "$ref": "#/definitions/id"
+        },
+        "surfacePolicy": {
+          "enum": ["create", "create-or-reuse", "existing"]
+        },
+        "sessionPolicy": {
+          "enum": ["fresh", "reuse", "prefer-reuse", "existing"]
+        },
+        "existingSurfaceId": {
+          "$ref": "#/definitions/id"
+        },
+        "worktreePolicy": {
+          "enum": [
+            "current",
+            "dedicated-child",
+            "dedicated-top-level",
+            "target-repository-new",
+            "from-input",
+            "advisory-read-only"
+          ]
+        },
+        "worktreeInput": {
+          "$ref": "#/definitions/inputMapping"
+        },
+        "inputMode": {
+          "enum": ["orchestrated", "interactive-recorded"]
+        },
+        "allowSharedWrite": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              {
+                "properties": {
+                  "sessionPolicy": {
+                    "const": "existing"
+                  }
+                },
+                "required": ["sessionPolicy"]
+              },
+              {
+                "properties": {
+                  "surfacePolicy": {
+                    "const": "existing"
+                  }
+                },
+                "required": ["surfacePolicy"]
+              }
+            ]
+          },
+          "then": {
+            "required": ["existingSurfaceId"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "targetPolicy": {
+                "const": "selected"
+              }
+            },
+            "required": ["targetPolicy"]
+          },
+          "then": {
+            "required": ["targetRef"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "worktreePolicy": {
+                "const": "from-input"
+              }
+            },
+            "required": ["worktreePolicy"]
+          },
+          "then": {
+            "required": ["worktreeInput"]
+          }
+        }
+      ]
+    },
+    "agentSelector": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "const": "caller"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "agentId"],
+          "properties": {
+            "kind": {
+              "const": "agent-id"
+            },
+            "agentId": {
+              "$ref": "#/definitions/id"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "inputId"],
+          "properties": {
+            "kind": {
+              "const": "run-input"
+            },
+            "inputId": {
+              "$ref": "#/definitions/id"
+            },
+            "requiredCapabilities": {
+              "type": "array",
+              "maxItems": 128,
+              "items": {
+                "$ref": "#/definitions/id"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "agentBindingScope": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "const": "run"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "loopNodeId"],
+          "properties": {
+            "kind": {
+              "const": "loop-iteration"
+            },
+            "loopNodeId": {
+              "$ref": "#/definitions/id"
+            }
+          }
+        }
+      ]
+    },
+    "retryPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxAttempts", "retryable", "backoffMs", "placement"],
+      "properties": {
+        "maxAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "retryable": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "enum": [
+              "executor-error",
+              "invalid-result",
+              "timeout",
+              "lost-worker"
+            ]
+          }
+        },
+        "backoffMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400000
+        },
+        "placement": {
+          "enum": ["same", "allow-fresh", "approval-for-change"]
+        }
+      }
+    },
+    "timeoutPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeoutMs", "onTimeout"],
+      "properties": {
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2592000000
+        },
+        "onTimeout": {
+          "enum": [
+            "checkpoint",
+            "needs-attention",
+            "wake-coordinator",
+            "cancel-and-retry",
+            "fail"
+          ]
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "title", "config"],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/id"
+        },
+        "kind": {
+          "enum": [
+            "start",
+            "end",
+            "shell",
+            "agent",
+            "condition",
+            "loop",
+            "human-gate",
+            "break",
+            "continue"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "config": {
+          "type": "object"
+        },
+        "inputMappings": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          }
+        },
+        "resultSchema": {
+          "$ref": "#/definitions/jsonSchemaRef"
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/retryPolicy"
+        },
+        "timeoutPolicy": {
+          "$ref": "#/definitions/timeoutPolicy"
+        },
+        "joinPolicy": {
+          "enum": ["all-successful", "all-settled", "any-successful"]
+        },
+        "anySuccessfulDisposition": {
+          "enum": ["wait", "cancel"]
+        },
+        "completionRoot": {
+          "type": "boolean"
+        },
+        "requiredSideEffect": {
+          "type": "boolean"
+        },
+        "onFailure": {
+          "enum": ["fail-run", "skip-descendants", "wake-coordinator"]
+        },
+        "onCancel": {
+          "enum": ["fail-run", "skip-descendants", "wake-coordinator"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": ["start", "end", "break", "continue"]
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/definitions/basicConfig"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "agent"
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/definitions/agentConfig"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "shell"
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/definitions/shellConfig"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "condition"
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/definitions/conditionConfig"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "loop"
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/definitions/loopConfig"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "human-gate"
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "$ref": "#/definitions/humanGateConfig"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "basicConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version"],
+      "properties": {
+        "version": {
+          "const": 1
+        }
+      }
+    },
+    "agentConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "agentRef", "prompt", "lifecycleMode", "coding"],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "agentRef": {
+          "$ref": "#/definitions/id"
+        },
+        "launch": {
+          "$ref": "#/definitions/agentLaunchPreferences"
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128000
+        },
+        "lifecycleMode": {
+          "const": "managed"
+        },
+        "coding": {
+          "type": "boolean"
+        }
+      }
+    },
+    "shellArgument": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": {
+              "const": "literal"
+            },
+            "value": {
+              "type": "string",
+              "maxLength": 32768
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "input"],
+          "properties": {
+            "kind": {
+              "const": "input"
+            },
+            "input": {
+              "$ref": "#/definitions/id"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "secretRef"],
+          "properties": {
+            "kind": {
+              "const": "secret"
+            },
+            "secretRef": {
+              "$ref": "#/definitions/id"
+            }
+          }
+        }
+      ]
+    },
+    "shellConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "command",
+        "targetPolicy",
+        "surfacePolicy",
+        "cwdPolicy",
+        "resultMode",
+        "maxOutputBytes"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "command": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "executable", "args"],
+              "properties": {
+                "kind": {
+                  "const": "structured"
+                },
+                "executable": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "args": {
+                  "type": "array",
+                  "maxItems": 256,
+                  "items": {
+                    "$ref": "#/definitions/shellArgument"
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "script", "args"],
+              "properties": {
+                "kind": {
+                  "const": "script"
+                },
+                "script": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 262144
+                },
+                "args": {
+                  "type": "array",
+                  "maxItems": 256,
+                  "items": {
+                    "$ref": "#/definitions/shellArgument"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "targetPolicy": {
+          "enum": ["local", "selected", "workflow-input"]
+        },
+        "targetRef": {
+          "$ref": "#/definitions/id"
+        },
+        "surfacePolicy": {
+          "const": "create"
+        },
+        "cwdPolicy": {
+          "enum": ["workspace", "from-input"]
+        },
+        "cwdInput": {
+          "$ref": "#/definitions/inputMapping"
+        },
+        "resultMode": {
+          "enum": ["exit-code", "json-stdout", "result-file"]
+        },
+        "resultFileInput": {
+          "$ref": "#/definitions/id"
+        },
+        "maxOutputBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        }
+      }
+    },
+    "conditionConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "expressionVersion", "expression", "ports"],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "expressionVersion": {
+          "const": 1
+        },
+        "expression": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "ports": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/definitions/id"
+          }
+        },
+        "errorPort": {
+          "$ref": "#/definitions/id"
+        },
+        "conditions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 31,
+          "items": {
+            "$ref": "#/definitions/workflowCondition"
+          }
+        }
+      }
+    },
+    "loopBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeIds", "entryNodeIds", "exits"],
+      "properties": {
+        "nodeIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/definitions/id"
+          }
+        },
+        "entryNodeIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/definitions/id"
+          }
+        },
+        "exits": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["nodeId", "outcome"],
+            "properties": {
+              "nodeId": {
+                "$ref": "#/definitions/id"
+              },
+              "port": {
+                "$ref": "#/definitions/id"
+              },
+              "outcome": {
+                "$ref": "#/definitions/id"
+              },
+              "action": {
+                "enum": ["break", "continue"]
+              }
+            }
+          }
+        }
+      }
+    },
+    "loopConfig": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "mode",
+            "collection",
+            "itemInputId",
+            "maxItems",
+            "concurrency",
+            "body",
+            "completedPort",
+            "maxReachedPort"
+          ],
+          "properties": {
+            "version": {
+              "const": 1
+            },
+            "mode": {
+              "const": "for-each"
+            },
+            "collection": {
+              "$ref": "#/definitions/dataSource"
+            },
+            "itemInputId": {
+              "$ref": "#/definitions/id"
+            },
+            "maxItems": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "concurrency": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            "body": {
+              "$ref": "#/definitions/loopBody"
+            },
+            "completedPort": {
+              "$ref": "#/definitions/id"
+            },
+            "maxReachedPort": {
+              "$ref": "#/definitions/id"
+            },
+            "accumulator": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["outputId", "source"],
+              "properties": {
+                "outputId": {
+                  "$ref": "#/definitions/id"
+                },
+                "source": {
+                  "$ref": "#/definitions/dataSource"
+                }
+              }
+            },
+            "loopOutputs": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "$ref": "#/definitions/loopOutput"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "mode",
+            "maxIterations",
+            "body",
+            "repeatOutcome",
+            "completedOutcomes",
+            "completedPort",
+            "maxReachedPort"
+          ],
+          "properties": {
+            "version": {
+              "const": 1
+            },
+            "mode": {
+              "const": "while"
+            },
+            "maxIterations": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "body": {
+              "$ref": "#/definitions/loopBody"
+            },
+            "repeatOutcome": {
+              "$ref": "#/definitions/id"
+            },
+            "completedOutcomes": {
+              "type": "array",
+              "minItems": 0,
+              "maxItems": 32,
+              "items": {
+                "$ref": "#/definitions/id"
+              }
+            },
+            "completedPort": {
+              "$ref": "#/definitions/id"
+            },
+            "maxReachedPort": {
+              "$ref": "#/definitions/id"
+            },
+            "maxGate": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "nodeId",
+                "retryResolution",
+                "completedResolutions",
+                "abortResolution"
+              ],
+              "properties": {
+                "nodeId": {
+                  "$ref": "#/definitions/id"
+                },
+                "retryResolution": {
+                  "$ref": "#/definitions/id"
+                },
+                "completedResolutions": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 32,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["resolution", "port"],
+                    "properties": {
+                      "resolution": {
+                        "$ref": "#/definitions/id"
+                      },
+                      "port": {
+                        "$ref": "#/definitions/id"
+                      }
+                    }
+                  }
+                },
+                "abortResolution": {
+                  "$ref": "#/definitions/id"
+                }
+              }
+            },
+            "carry": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["inputId", "initial", "next"],
+                "properties": {
+                  "inputId": {
+                    "$ref": "#/definitions/id"
+                  },
+                  "initial": {
+                    "$ref": "#/definitions/dataSource"
+                  },
+                  "next": {
+                    "$ref": "#/definitions/dataSource"
+                  }
+                }
+              }
+            },
+            "loopOutputs": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "$ref": "#/definitions/loopOutput"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "humanGateConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "question", "resolutions", "approverPolicy"],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "resolutions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/definitions/id"
+          }
+        },
+        "approverPolicy": {
+          "enum": ["run-owner", "local-user"]
+        }
+      }
+    },
+    "edgeEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeId"],
+      "properties": {
+        "nodeId": {
+          "$ref": "#/definitions/id"
+        },
+        "port": {
+          "$ref": "#/definitions/id"
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "from", "to"],
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/id"
+        },
+        "from": {
+          "$ref": "#/definitions/edgeEndpoint"
+        },
+        "to": {
+          "$ref": "#/definitions/edgeEndpoint"
+        }
+      }
+    },
+    "runLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxNodes",
+        "maxEdges",
+        "maxGraphDepth",
+        "maxFanOut",
+        "maxLoopIterations",
+        "maxActiveAttempts",
+        "maxAttemptsPerSession",
+        "maxDispatches",
+        "maxCoordinatorTurns",
+        "maxGraphPatches",
+        "maxWallClockMs",
+        "maxActiveExecutionMs",
+        "maxArtifactBytes",
+        "maxStructuredResultBytes"
+      ],
+      "properties": {
+        "maxNodes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "maxEdges": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "maxGraphDepth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "maxFanOut": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "maxLoopIterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "maxActiveAttempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "maxAttemptsPerSession": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "maxDispatches": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "maxCoordinatorTurns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "maxGraphPatches": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "maxWallClockMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 31536000000
+        },
+        "maxActiveExecutionMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 31536000000
+        },
+        "maxArtifactBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1099511627776
+        },
+        "maxStructuredResultBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        }
+      }
+    },
+    "workflowPolicies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["limits", "failure", "cancellation"],
+      "properties": {
+        "limits": {
+          "$ref": "#/definitions/runLimits"
+        },
+        "failure": {
+          "enum": ["fail-run", "wake-coordinator", "needs-attention"]
+        },
+        "cancellation": {
+          "enum": ["cancel-active", "wait-active"]
+        }
+      }
+    },
+    "workflowCondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "left", "operator"],
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/id"
+        },
+        "left": {
+          "$ref": "#/definitions/dataSource"
+        },
+        "operator": {
+          "enum": [
+            "eq",
+            "neq",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "contains",
+            "not_contains",
+            "in",
+            "nin",
+            "is_empty",
+            "is_not_empty",
+            "is_true",
+            "is_false"
+          ]
+        },
+        "right": {
+          "$ref": "#/definitions/dataSource"
+        }
+      }
+    },
+    "loopOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source", "mode"],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/id"
+        },
+        "source": {
+          "$ref": "#/definitions/dataSource"
+        },
+        "mode": {
+          "enum": ["last", "collect"]
+        }
+      }
+    }
+  }
+}

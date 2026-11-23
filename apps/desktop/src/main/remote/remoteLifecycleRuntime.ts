@@ -562,12 +562,18 @@ export class RemoteLifecycleRuntime {
     }
   }
 
+  async createTerminal(
+    action: Extract<RemoteRendererLifecycleAction, { type: "surface.create" }>
+  ): Promise<{ readonly surfaceId: Id; readonly sessionId: Id }> {
+    return this.createProductSession(action);
+  }
+
   private async createProductSession(
     action: Extract<
       RemoteRendererLifecycleAction,
       { type: "pane.split" | "surface.create" }
     >
-  ): Promise<void> {
+  ): Promise<{ readonly surfaceId: Id; readonly sessionId: Id }> {
     const state = this.options.getState();
     const paneId = action.paneId;
     const { workspace, pane } = requireRemotePaneContext(state, paneId);
@@ -617,6 +623,7 @@ export class RemoteLifecycleRuntime {
       payload,
       expectedRemoteResourceRevision: uint64(0n)
     });
+    return { surfaceId: payload.surfaceId, sessionId };
   }
 
   private async restartProductSession(surfaceId: Id): Promise<void> {

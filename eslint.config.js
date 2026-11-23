@@ -11,6 +11,7 @@ export default [
       "**/coverage/**",
       "**/playwright-report/**",
       "**/test-results/**",
+      "output/**",
       ".kmux/**",
       "apps/desktop/out/**",
       "apps/desktop/dist/**",
@@ -27,6 +28,15 @@ export default [
         console: "readonly",
         fetch: "readonly",
         process: "readonly"
+      }
+    }
+  },
+  {
+    files: ["tests/fixtures/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        process: "readonly",
+        queueMicrotask: "readonly"
       }
     }
   },

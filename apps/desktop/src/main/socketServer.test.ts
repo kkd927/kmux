@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import {
   existsSync,
@@ -9,6 +9,8 @@ import {
   statSync,
   writeFileSync
 } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { socketPeerPid } from "./socketPeerPid";
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,7 +57,9 @@ async function sendSocketMessage(
 
 function createTestSocketServer(
   socketPath: string,
-  state = createInitialState("/bin/zsh")
+  state = createInitialState("/bin/zsh"),
+  handleOrchestration?: (request: unknown, principal: string) => unknown,
+  resolvePeerPid?: (socket: Socket) => Promise<number>
 ): KmuxSocketServer {
   state.settings.socketMode = "allowAll";
   const activeWorkspaceId =
@@ -66,6 +70,8 @@ function createTestSocketServer(
     dispatch: vi.fn(),
     sendSurfaceText: vi.fn(),
     sendSurfaceKey: vi.fn(),
+    handleOrchestration,
+    resolvePeerPid,
     identify: () => ({
       socketPath,
       socketMode: state.settings.socketMode,
@@ -368,6 +374,83 @@ describe("kmux socket server startup", () => {
       reason: "socket-path-too-long",
       socketPath
     });
+  });
+});
+
+describe("orchestration socket authority", () => {
+  it("does not promote missing or invalid Agent credentials to a local user in allowAll mode", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kmux-socket-authority-"));
+    const socketPath = join(root, "control.sock");
+    const state = createInitialState("/bin/zsh");
+    const session = Object.values(state.sessions)[0]!;
+    const handle = vi.fn((_request: unknown, principal: string) => ({
+      principal
+    }));
+    const helper = join(root, "peer");
+    execFileSync("cc", [
+      fileURLToPath(new URL("../../build/socket-peer.c", import.meta.url)),
+      "-o",
+      helper
+    ]);
+    const server = createTestSocketServer(socketPath, state, handle, (socket) =>
+      socketPeerPid(helper, socket)
+    );
+    try {
+      await server.start();
+      const request = {
+        jsonrpc: "2.0",
+        id: "status",
+        method: "orchestration.status",
+        params: { runId: "run:test" }
+      };
+      expect(await sendSocketMessage(socketPath, request)).toMatchObject({
+        result: { principal: "client:local" }
+      });
+      expect(
+        await sendSocketMessage(socketPath, {
+          ...request,
+          params: { ...request.params, authToken: "invalid" }
+        })
+      ).toMatchObject({
+        error: { message: expect.stringContaining("authentication is invalid") }
+      });
+      expect(
+        await sendSocketMessage(socketPath, {
+          ...request,
+          params: { ...request.params, authToken: session.authToken }
+        })
+      ).toMatchObject({ result: { principal: `session:${session.id}` } });
+      expect(handle).toHaveBeenCalledTimes(2);
+      expect(
+        await sendSocketMessage(socketPath, {
+          jsonrpc: "2.0",
+          id: "heartbeat",
+          method: "orchestration.worker.heartbeat",
+          params: {
+            taskId: "task:worker",
+            dispatchId: "dispatch:worker",
+            phase: "Reviewing sources",
+            callerPid: 1,
+            authToken: session.authToken
+          }
+        })
+      ).toMatchObject({ result: { principal: `session:${session.id}` } });
+      expect(handle).toHaveBeenLastCalledWith(
+        {
+          method: "orchestration.worker.heartbeat",
+          params: {
+            taskId: "task:worker",
+            dispatchId: "dispatch:worker",
+            phase: "Reviewing sources"
+          }
+        },
+        `session:${session.id}`,
+        process.pid
+      );
+    } finally {
+      await server.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

@@ -126,6 +126,27 @@ function bindLocatedTargetServices(
             await services.git.inspect(path(cwd), options),
             wrap
           ),
+        ...(services.git.captureState
+          ? {
+              captureState: async (cwd, captureOptions) => {
+                const capture = await services.git.captureState!(
+                  path(cwd),
+                  captureOptions
+                );
+                return {
+                  ...capture,
+                  repositoryRoot: wrap(capture.repositoryRoot),
+                  commonGitDir: wrap(capture.commonGitDir)
+                };
+              }
+            }
+          : {}),
+        ...(services.git.materializeState
+          ? {
+              materializeState: (cwd, state) =>
+                services.git.materializeState!(path(cwd), state)
+            }
+          : {}),
         managedWorktreeRoot: () => wrap(services.git.managedWorktreeRoot()),
         createWorktree: (request) =>
           services.git.createWorktree({
@@ -168,6 +189,27 @@ function bindLocatedTargetServices(
     git: {
       inspect: async (cwd, options) =>
         wrapGitInspection(await services.git.inspect(path(cwd), options), wrap),
+      ...(services.git.captureState
+        ? {
+            captureState: async (cwd, captureOptions) => {
+              const capture = await services.git.captureState!(
+                path(cwd),
+                captureOptions
+              );
+              return {
+                ...capture,
+                repositoryRoot: wrap(capture.repositoryRoot),
+                commonGitDir: wrap(capture.commonGitDir)
+              };
+            }
+          }
+        : {}),
+      ...(services.git.materializeState
+        ? {
+            materializeState: (cwd, state) =>
+              services.git.materializeState!(path(cwd), state)
+          }
+        : {}),
       managedWorktreeRoot: () => wrap(services.git.managedWorktreeRoot()),
       createWorktree: (request) =>
         services.git.createWorktree({

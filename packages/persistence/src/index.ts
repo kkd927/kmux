@@ -59,6 +59,8 @@ export interface AppPaths {
   windowStatePath: string;
   settingsPath: string;
   usageHistoryPath: string;
+  orchestrationStatePath: string;
+  orchestrationArtifactRoot: string;
   shellEnvCachePath: string;
   antigravitySessionsPath: string;
   desktopInstallationIdentityPath: string;
@@ -71,10 +73,12 @@ export interface AppPaths {
   captureRoot: string;
   attachmentRoot: string;
   rawOutputRoot: string;
+  terminalHistoryRoot: string;
   nativeCacheRoot: string;
   diagnosticsRoot: string;
   agentHookBinDir: string;
   agentWrapperBinDir: string;
+  cliBinDir: string;
   sources: {
     configDir: AppPathSource;
     runtimeDir: AppPathSource;
@@ -1053,6 +1057,8 @@ export function resolveAppPaths(options: ResolveAppPathsOptions): AppPaths {
     windowStatePath: join(stateDir.path, "window-state.json"),
     settingsPath: join(configDir.path, "settings.json"),
     usageHistoryPath: join(stateDir.path, "usage-history.json"),
+    orchestrationStatePath: join(stateDir.path, "orchestration.json"),
+    orchestrationArtifactRoot: join(stateDir.path, "orchestration-artifacts"),
     shellEnvCachePath: join(stateDir.path, "shell-env.json"),
     antigravitySessionsPath: join(stateDir.path, "antigravity-sessions.json"),
     desktopInstallationIdentityPath: join(
@@ -1083,6 +1089,7 @@ export function resolveAppPaths(options: ResolveAppPathsOptions): AppPaths {
       "attachments"
     ),
     rawOutputRoot: join(stateDir.path, "pty-raw"),
+    terminalHistoryRoot: join(stateDir.path, "terminal-history"),
     nativeCacheRoot: join(cacheDir.path, "native"),
     diagnosticsRoot: join(stateDir.path, "diagnostics"),
     agentHookBinDir: join(isLinux ? dataDir.path : configDir.path, "bin"),
@@ -1090,6 +1097,7 @@ export function resolveAppPaths(options: ResolveAppPathsOptions): AppPaths {
       isLinux ? dataDir.path : configDir.path,
       "wrappers"
     ),
+    cliBinDir: join(isLinux ? dataDir.path : configDir.path, "commands"),
     sources: {
       configDir: configDir.source,
       runtimeDir:

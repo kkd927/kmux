@@ -1,0 +1,14 @@
+{
+  "task": "목록 처리 기능의 두 구현 접근법을 비교하고 선택한 안을 병합한다.",
+  "validationCommand": "npm test",
+  "approachA": "기존 구조를 유지하는 최소 변경안",
+  "approachB": "책임을 분리하는 대안 구현",
+  "baselineAgent": "codex",
+  "variantAAgent": "codex",
+  "variantBAgent": "codex",
+  "mergeAgent": "codex",
+  "verificationAgent": "codex",
+  "acceptanceCriteria": "요구한 동작과 기존 호환성을 확인하고 프로젝트 검증을 통과한다.",
+  "constraints": "기존 사용자 변경을 보존하고 요청 범위에만 작업한다.",
+  "reportDirectory": ""
+}

@@ -12,6 +12,7 @@ import {
 } from "@kmux/core";
 import type {
   JsonRpcEnvelope,
+  NormalizedAgentEvent,
   ShellIdentity,
   SplitDirection
 } from "@kmux/proto";
@@ -28,8 +29,10 @@ import {
   type ParsedSocketRequest,
   parseSocketEnvelope,
   parseSocketRequest,
+  isOrchestrationSocketRequest,
   UnknownSocketMethodError
 } from "./socketRpc";
+import type { LocalOrchestrationRequest } from "./orchestrationHost";
 
 type AgentEventParams = Extract<
   ParsedSocketRequest,
@@ -40,7 +43,6 @@ type SurfaceScopedPaneParams = {
   surfaceId?: string;
   sessionId?: string;
 };
-
 const RECENT_STRUCTURED_AGENT_DEDUPE_MS = 5 * 60 * 1000;
 const POSIX_SOCKET_PATH_MAX_BYTES = 103;
 const SOCKET_PROBE_TIMEOUT_MS = 300;
@@ -344,6 +346,7 @@ function resolveLivePaneIdForStableTarget(
 }
 
 interface SocketServerOptions {
+  resolvePeerPid?: (socket: Socket) => Promise<number>;
   socketPath: string;
   getState?: () => AppState;
   dispatch?: (action: AppAction) => void;
@@ -369,7 +372,23 @@ interface SocketServerOptions {
     agent: string;
     hookEvent: string;
     payload: Record<string, unknown>;
+    normalizedEvent: NormalizedAgentEvent | null;
+    authenticatedSessionId?: string;
   }) => void;
+  handleOrchestration?: (
+    request: LocalOrchestrationRequest,
+    principal: string,
+    callerPid?: number
+  ) => unknown | Promise<unknown>;
+  handleOrchestrationSkill?: (request: {
+    readonly method:
+      | "orchestration.skill.status"
+      | "orchestration.skill.install";
+    readonly params: {
+      readonly agentIds: readonly string[];
+      readonly confirm?: true;
+    };
+  }) => unknown | Promise<unknown>;
 }
 
 interface SocketServerRuntime {
@@ -397,7 +416,23 @@ interface SocketServerRuntime {
     agent: string;
     hookEvent: string;
     payload: Record<string, unknown>;
+    normalizedEvent: NormalizedAgentEvent | null;
+    authenticatedSessionId?: string;
   }) => void;
+  handleOrchestration?: (
+    request: LocalOrchestrationRequest,
+    principal: string,
+    callerPid?: number
+  ) => unknown | Promise<unknown>;
+  handleOrchestrationSkill?: (request: {
+    readonly method:
+      | "orchestration.skill.status"
+      | "orchestration.skill.install";
+    readonly params: {
+      readonly agentIds: readonly string[];
+      readonly confirm?: true;
+    };
+  }) => unknown | Promise<unknown>;
 }
 
 class SocketServerStartingError extends Error {
@@ -428,7 +463,8 @@ function extractRuntime(
     captureSurface: options.captureSurface,
     identify: options.identify,
     isSurfaceVisibleToUser: options.isSurfaceVisibleToUser,
-    onAgentHook: options.onAgentHook
+    onAgentHook: options.onAgentHook,
+    handleOrchestration: options.handleOrchestration
   };
 }
 
@@ -520,7 +556,7 @@ export class KmuxSocketServer {
         parsedEnvelope.id,
         parsedEnvelope.authToken
       );
-      const result = this.route(request, runtime);
+      const result = this.route(request, runtime, socket);
       if (isPromiseLike(result)) {
         void Promise.resolve(result).then(
           (resolved) => this.reply(socket, request.id, resolved),
@@ -572,7 +608,8 @@ export class KmuxSocketServer {
 
   private route(
     request: ParsedSocketRequest,
-    runtime: SocketServerRuntime
+    runtime: SocketServerRuntime,
+    socket: Socket
   ): unknown {
     const state = runtime.getState();
     const activeWorkspaceId =
@@ -580,6 +617,88 @@ export class KmuxSocketServer {
     const activeWorkspace = state.workspaces[activeWorkspaceId];
     const activePane = state.panes[activeWorkspace.activePaneId];
     const activeSurfaceId = activePane.activeSurfaceId;
+
+    if (isOrchestrationSocketRequest(request)) {
+      if (!runtime.handleOrchestration) {
+        throw new Error("orchestration Runtime is unavailable");
+      }
+      const session = request.authToken
+        ? Object.values(state.sessions).find(
+            (candidate) => candidate.authToken === request.authToken
+          )
+        : undefined;
+      if (request.authToken && !session) {
+        throw new Error("orchestration session authentication is invalid");
+      }
+      const principal = session ? `session:${session.id}` : "client:local";
+      const scopedSurface = session
+        ? state.surfaces[session.surfaceId]
+        : state.surfaces[activeSurfaceId];
+      const normalizedParams =
+        request.method === "orchestration.worker.start"
+          ? {
+              ...request.params,
+              agentId:
+                resolveBuiltinAgentId(request.params.agentId) ??
+                request.params.agentId
+            }
+          : request.params;
+      const orchestrationRequest =
+        request.method === "orchestration.run.create"
+          ? {
+              method: request.method,
+              params: {
+                ...request.params,
+                ...(session && scopedSurface
+                  ? {
+                      coordinatorAttachment: {
+                        surfaceId: scopedSurface.id,
+                        sessionId: session.id
+                      }
+                    }
+                  : {}),
+                inputs: {
+                  ...request.params.inputs,
+                  ...(scopedSurface
+                    ? { "kmux.surfaceId": scopedSurface.id }
+                    : {}),
+                  ...(session ? { "kmux.sessionId": session.id } : {})
+                }
+              }
+            }
+          : request.method === "workflow.run" && session && scopedSurface
+            ? {
+                method: request.method,
+                params: {
+                  ...request.params,
+                  callerAttachment: {
+                    surfaceId: scopedSurface.id,
+                    sessionId: session.id
+                  }
+                }
+              }
+            : { method: request.method, params: normalizedParams };
+      if (
+        request.method === "orchestration.run.create" &&
+        !("coordinatorAttachment" in orchestrationRequest.params)
+      ) {
+        throw new Error(
+          "ad-hoc Run creation must come from the invoking Agent terminal"
+        );
+      }
+      const handle = runtime.handleOrchestration;
+      return Promise.resolve(
+        session && this.options.resolvePeerPid
+          ? this.options.resolvePeerPid(socket)
+          : undefined
+      ).then((pid) =>
+        handle(
+          orchestrationRequest as LocalOrchestrationRequest,
+          principal,
+          pid
+        )
+      );
+    }
 
     switch (request.method) {
       case "workspace.list":
@@ -712,7 +831,36 @@ export class KmuxSocketServer {
         if (result.warning) console.warn(result.warning);
         return result;
       }
+      case "orchestration.skill.status":
+      case "orchestration.skill.install": {
+        if (request.method === "orchestration.skill.install") {
+          throw new Error("Install Agent skills from Settings → Orchestration");
+        }
+        if (!runtime.handleOrchestrationSkill) {
+          throw new Error("orchestration skill management is unavailable");
+        }
+        return runtime.handleOrchestrationSkill({
+          method: request.method,
+          params: request.params
+        });
+      }
       case "agent.hook": {
+        const payload = request.params.payload ?? {};
+        const event = normalizeAgentHookInvocation(
+          request.params.agent,
+          request.params.hookEvent,
+          payload,
+          {
+            KMUX_WORKSPACE_ID: request.params.workspaceId,
+            KMUX_SURFACE_ID: request.params.surfaceId,
+            KMUX_SESSION_ID: request.params.sessionId
+          }
+        );
+        const authenticatedSessionId = request.authToken
+          ? Object.values(state.sessions).find(
+              (candidate) => candidate.authToken === request.authToken
+            )?.id
+          : undefined;
         const onAgentHook = runtime.onAgentHook;
         if (onAgentHook) {
           setImmediate(() => {
@@ -720,23 +868,15 @@ export class KmuxSocketServer {
               onAgentHook({
                 agent: request.params.agent,
                 hookEvent: request.params.hookEvent,
-                payload: request.params.payload ?? {}
+                payload,
+                normalizedEvent: event,
+                ...(authenticatedSessionId ? { authenticatedSessionId } : {})
               });
             } catch {
               // Hook side effects must not block the agent hook response path.
             }
           });
         }
-        const event = normalizeAgentHookInvocation(
-          request.params.agent,
-          request.params.hookEvent,
-          request.params.payload ?? {},
-          {
-            KMUX_WORKSPACE_ID: request.params.workspaceId,
-            KMUX_SURFACE_ID: request.params.surfaceId,
-            KMUX_SESSION_ID: request.params.sessionId
-          }
-        );
         if (event) {
           return this.dispatchAgentEvent(
             event.paneId || !request.params.paneId
@@ -749,7 +889,7 @@ export class KmuxSocketServer {
         const notification = normalizeHookNotificationInvocation(
           request.params.agent,
           request.params.hookEvent,
-          request.params.payload ?? {},
+          payload,
           {
             KMUX_WORKSPACE_ID: request.params.workspaceId,
             KMUX_SURFACE_ID: request.params.surfaceId,

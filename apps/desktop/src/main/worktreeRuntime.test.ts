@@ -76,6 +76,12 @@ function createWorktreeRuntime(options: TestWorktreeRuntimeOptions) {
           cwd,
           launch: { ...request.launch, cwd }
         });
+        const state = options.getState();
+        const surfaceId = state.panes[request.paneId]!.activeSurfaceId;
+        const session = Object.values(state.sessions).find(
+          (value) => value.surfaceId === surfaceId
+        )!;
+        return { surfaceId, sessionId: session.id };
       }),
       terminate: vi.fn(),
       sendText: vi.fn(),

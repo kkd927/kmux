@@ -1,0 +1,12 @@
+{
+  "task": "설정 관리 Epic을 작업 패키지로 나누어 구현·통합·검증한다.",
+  "validationCommand": "npm test",
+  "planningAgent": "codex",
+  "designAgent": "codex",
+  "implementationAgent": "codex",
+  "reviewAgent": "antigravity",
+  "verificationAgent": "codex",
+  "acceptanceCriteria": "요구한 동작과 기존 호환성을 확인하고 프로젝트 검증을 통과한다.",
+  "constraints": "기존 사용자 변경을 보존하고 요청 범위에만 작업한다.",
+  "reportDirectory": ""
+}

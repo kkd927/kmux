@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -90,6 +91,22 @@ const alias = {
     "packages/agents/src/builtinSubscriptions.ts"
   ),
   "@kmux/agents": resolve(repoRoot, "packages/agents/src/index.ts"),
+  "@kmux/orchestration/editor": resolve(
+    repoRoot,
+    "packages/orchestration/src/editorDocument.ts"
+  ),
+  "@kmux/orchestration/scopes": resolve(
+    repoRoot,
+    "packages/orchestration/src/scopes.ts"
+  ),
+  "@kmux/orchestration/node": resolve(
+    repoRoot,
+    "packages/orchestration/src/node.ts"
+  ),
+  "@kmux/orchestration": resolve(
+    repoRoot,
+    "packages/orchestration/src/index.ts"
+  ),
   "@kmux/ui": resolve(repoRoot, "packages/ui/src/index.ts")
 };
 
@@ -98,7 +115,26 @@ export default defineConfig({
     // electron-vite's ESM shim scanner can mistake an IPC string containing
     // "import" for a static import and splice its shim inside the string. Put
     // the equivalent Electron 30+ shim at a known-safe boundary first.
-    plugins: [safeElectronEsmShim, externalizeDepsPlugin()],
+    plugins: [
+      safeElectronEsmShim,
+      externalizeDepsPlugin(),
+      {
+        name: "kmux:socket-peer",
+        writeBundle({ dir }) {
+          const arch =
+            process.platform === "darwin"
+              ? ["-arch", "arm64", "-arch", "x86_64"]
+              : [];
+          execFileSync("cc", [
+            ...arch,
+            "-O2",
+            resolve(currentDir, "build/socket-peer.c"),
+            "-o",
+            resolve(dir!, "socket-peer")
+          ]);
+        }
+      }
+    ],
     resolve: {
       alias
     },
@@ -138,7 +174,8 @@ export default defineConfig({
   },
   renderer: {
     resolve: {
-      alias
+      alias,
+      dedupe: ["react", "react-dom", "styled-components"]
     },
     plugins: [
       createRendererContentSecurityPolicyPlugin({
