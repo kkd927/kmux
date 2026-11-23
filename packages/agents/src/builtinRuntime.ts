@@ -14,6 +14,7 @@ import type {
   AgentStorageRoots,
   AiCliProcessMatcher,
   PricingVendorId,
+  SessionInventoryDirectoryFilter,
   SessionInventoryLimits,
   UsageAdapter
 } from "@kmux/metadata";
@@ -365,6 +366,21 @@ export function builtinAgentMetadataQueryPlans(): Readonly<
     Object.fromEntries(
       [...composition.metadataSources().values()].flatMap((capability) =>
         Object.entries(capability.localQueryPlans ?? {})
+      )
+    )
+  );
+}
+
+export function builtinAgentMetadataDirectoryFilters(): Readonly<
+  Record<AgentId, SessionInventoryDirectoryFilter>
+> {
+  return Object.freeze(
+    Object.fromEntries(
+      [...composition.metadataSources().entries()].flatMap(
+        ([agentId, capability]) =>
+          capability.shouldDescendDirectory
+            ? [[agentId, capability.shouldDescendDirectory] as const]
+            : []
       )
     )
   );

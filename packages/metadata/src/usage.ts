@@ -19,6 +19,7 @@ import {
   collectSessionInventory,
   type SessionInventoryCandidate,
   type SessionInventoryDiagnostic,
+  type SessionInventoryDirectoryFilter,
   type SessionInventory
 } from "./sessionInventory";
 import {
@@ -163,6 +164,7 @@ interface FileUsageAdapterOptions {
   probeProjectionRevision?: () => string;
   projectionRoots?: readonly string[];
   inventoryRoots?: readonly string[];
+  shouldDescendDirectory?: SessionInventoryDirectoryFilter;
   inventoryLoader?: () => SessionInventory | Promise<SessionInventory>;
   inventoryWatch?: (onChange: (sourcePath?: string) => void) => () => void;
   inventoryInvalidate?: () => void;
@@ -183,6 +185,7 @@ export interface FileUsageAdapterDefinition {
   readonly probeProjectionRevision?: FileUsageAdapterOptions["probeProjectionRevision"];
   readonly metadataInventory?: AgentMetadataInventoryService;
   readonly topologyRoots?: readonly string[];
+  readonly shouldDescendDirectory?: SessionInventoryDirectoryFilter;
 }
 
 class FileUsageAdapter implements UsageAdapter {
@@ -196,6 +199,7 @@ class FileUsageAdapter implements UsageAdapter {
   private readonly probeProjectionRevision?: FileUsageAdapterOptions["probeProjectionRevision"];
   private readonly projectionRoots: readonly string[];
   private readonly inventoryRoots: readonly string[];
+  private readonly shouldDescendDirectory?: SessionInventoryDirectoryFilter;
   private readonly inventoryLoader?: () =>
     | SessionInventory
     | Promise<SessionInventory>;
@@ -242,6 +246,7 @@ class FileUsageAdapter implements UsageAdapter {
     this.probeProjectionRevision = options.probeProjectionRevision;
     this.projectionRoots = options.projectionRoots ?? this.roots;
     this.inventoryRoots = options.inventoryRoots ?? this.roots;
+    this.shouldDescendDirectory = options.shouldDescendDirectory;
     this.inventoryLoader = options.inventoryLoader;
     this.inventoryWatch = options.inventoryWatch;
     this.inventoryInvalidate = options.inventoryInvalidate;
@@ -440,7 +445,8 @@ class FileUsageAdapter implements UsageAdapter {
     const inventory = collectUsageSources(
       this.inventoryRoots,
       this.classifySource,
-      sharedInventory
+      sharedInventory,
+      this.shouldDescendDirectory
     );
     await this.refreshProjection(inventory.inventory);
     const nextSources = inventory.sources;
@@ -685,6 +691,9 @@ export function createFileUsageAdapter(
     classifySource: definition.classifySource,
     projectionRoots: topologyRoots,
     inventoryRoots: topologyRoots,
+    ...(definition.shouldDescendDirectory
+      ? { shouldDescendDirectory: definition.shouldDescendDirectory }
+      : {}),
     ...(definition.prepareProjection
       ? { prepareProjection: definition.prepareProjection }
       : {}),
@@ -758,7 +767,8 @@ export async function scanUsageAdapters(
 function collectUsageSources(
   roots: readonly string[],
   classifySource: FileUsageAdapterOptions["classifySource"],
-  sharedInventory?: SessionInventory
+  sharedInventory?: SessionInventory,
+  shouldDescendDirectory?: SessionInventoryDirectoryFilter
 ): {
   sources: SourceDescriptor[];
   truncated: boolean;
@@ -766,7 +776,9 @@ function collectUsageSources(
   inventory: SessionInventory;
 } {
   const sources: SourceDescriptor[] = [];
-  const inventory = sharedInventory ?? collectSessionInventory(roots);
+  const inventory =
+    sharedInventory ??
+    collectSessionInventory(roots, {}, { shouldDescendDirectory });
   let truncated = inventory.truncated;
   const matching = inventory.candidates
     .map((candidate) => ({

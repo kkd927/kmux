@@ -6,6 +6,7 @@ import {
   type UsageAdapter
 } from "@kmux/metadata";
 import {
+  builtinAgentMetadataDirectoryFilters,
   builtinAgentMetadataQueryPlans,
   builtinAgentMetadataSourceRevisions,
   createBuiltinLocalExternalSessionIndexer,
@@ -75,7 +76,8 @@ async function initialize(config: UsageScanWorkerConfig): Promise<void> {
     principal: process.getuid ? `uid:${process.getuid()}` : "desktop-user",
     platform: config.platform,
     sourceDefinitionRevisions: builtinAgentMetadataSourceRevisions(),
-    queryPlans: builtinAgentMetadataQueryPlans()
+    queryPlans: builtinAgentMetadataQueryPlans(),
+    directoryFilters: builtinAgentMetadataDirectoryFilters()
   });
   const runtimeOptions = { ...config, metadataInventory };
   adapters = [...listBuiltinLocalUsageAdapters(runtimeOptions)];

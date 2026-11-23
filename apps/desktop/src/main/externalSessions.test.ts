@@ -19,6 +19,7 @@ import {
   type AgentMetadataInventoryService
 } from "@kmux/metadata";
 import {
+  builtinAgentMetadataDirectoryFilters,
   builtinAgentMetadataQueryPlans,
   builtinAgentMetadataSourceRevisions,
   createBuiltinLocalExternalSessionIndexer
@@ -73,7 +74,8 @@ function createTestExternalSessionIndexer(
   const metadataInventory = createLocalMetadataInventoryService({
     principal: "uid:test",
     sourceDefinitionRevisions: builtinAgentMetadataSourceRevisions(),
-    queryPlans: builtinAgentMetadataQueryPlans()
+    queryPlans: builtinAgentMetadataQueryPlans(),
+    directoryFilters: builtinAgentMetadataDirectoryFilters()
   });
   metadataInventories.push(metadataInventory);
   return createBuiltinLocalExternalSessionIndexer({

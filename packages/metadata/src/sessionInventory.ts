@@ -49,9 +49,19 @@ export interface SessionInventory {
   diagnostics: SessionInventoryDiagnostic[];
 }
 
+export type SessionInventoryDirectoryFilter = (
+  relativeDirectoryPath: string,
+  rootPath: string
+) => boolean;
+
+export interface CollectSessionInventoryOptions {
+  shouldDescendDirectory?: SessionInventoryDirectoryFilter;
+}
+
 export function collectSessionInventory(
   roots: readonly string[],
-  limits: Partial<SessionInventoryLimits> = {}
+  limits: Partial<SessionInventoryLimits> = {},
+  options: CollectSessionInventoryOptions = {}
 ): SessionInventory {
   const resolvedLimits = resolveInventoryLimits(limits);
   const candidates: SessionInventoryCandidate[] = [];
@@ -84,7 +94,11 @@ export function collectSessionInventory(
     seenRootPaths.add(actualRoot.path);
     seenRootIdentities.add(actualRoot.identity);
 
-    const rootResult = collectInventoryRoot(actualRoot.path, resolvedLimits);
+    const rootResult = collectInventoryRoot(
+      actualRoot.path,
+      resolvedLimits,
+      options.shouldDescendDirectory
+    );
     candidates.push(...rootResult.candidates);
     diagnostics.push(...rootResult.diagnostics);
     truncated ||= rootResult.truncated;
@@ -127,7 +141,8 @@ export function normalizeSessionInventoryRoots(
 
 function collectInventoryRoot(
   root: string,
-  limits: SessionInventoryLimits
+  limits: SessionInventoryLimits,
+  shouldDescendDirectory?: SessionInventoryDirectoryFilter
 ): SessionInventory {
   const candidates: SessionInventoryCandidate[] = [];
   const diagnostics: SessionInventoryDiagnostic[] = [];
@@ -217,6 +232,15 @@ function collectInventoryRoot(
           continue;
         }
         if (stats.isDirectory()) {
+          if (
+            shouldDescendDirectory &&
+            !shouldDescendDirectory(
+              relative(root, entryPath).replace(/\\/gu, "/"),
+              root
+            )
+          ) {
+            continue;
+          }
           if (directory.depth >= limits.maxDepth) {
             diagnostics.push(inventoryDiagnostic(root, entryPath, "max-depth"));
             truncated = true;

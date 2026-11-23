@@ -19,6 +19,7 @@ import type {
   AgentStorageRoots,
   PricingVendorId,
   SessionInventory,
+  SessionInventoryDirectoryFilter,
   SessionInventoryLimits,
   UsageAdapter
 } from "@kmux/metadata";
@@ -226,6 +227,7 @@ export interface AgentMetadataSourcesCapability {
   readonly localQueryPlans?: Readonly<
     Record<string, AgentMetadataLocalQueryPlan>
   >;
+  readonly shouldDescendDirectory?: SessionInventoryDirectoryFilter;
   resolveLocalRoots?(options: AgentMetadataRuntimeOptions): readonly string[];
 }
 

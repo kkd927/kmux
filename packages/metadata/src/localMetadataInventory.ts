@@ -20,6 +20,7 @@ import {
   collectSessionInventory,
   normalizeSessionInventoryRoots,
   type SessionInventory,
+  type SessionInventoryDirectoryFilter,
   type SessionInventoryLimits
 } from "./sessionInventory";
 
@@ -87,6 +88,7 @@ export function createLocalMetadataInventoryService(options: {
   platform?: NodeJS.Platform;
   sourceDefinitionRevisions: Readonly<Record<AgentId, string>>;
   queryPlans?: Readonly<Record<string, AgentMetadataLocalQueryPlan>>;
+  directoryFilters?: Readonly<Record<AgentId, SessionInventoryDirectoryFilter>>;
 }): AgentMetadataInventoryService {
   const coordinator = createMetadataSourceCoordinator<
     SessionInventory,
@@ -115,6 +117,11 @@ export function createLocalMetadataInventoryService(options: {
       roots: normalizedRoots,
       limits: normalizedLimits
     });
+    const shouldDescendDirectory =
+      options.directoryFilters &&
+      Object.hasOwn(options.directoryFilters, agentId)
+        ? options.directoryFilters[agentId]
+        : undefined;
     const projectionLease = coordinator.acquire(
       {
         targetAuthority: options.targetAuthority ?? "local",
@@ -131,7 +138,8 @@ export function createLocalMetadataInventoryService(options: {
           normalizedRoots,
           normalizedLimits,
           options.platform ?? process.platform,
-          options.queryPlans ?? {}
+          options.queryPlans ?? {},
+          shouldDescendDirectory
         )
     );
     const watchCleanups = new Set<() => void>();
@@ -259,7 +267,8 @@ function createInventoryResource(
   roots: readonly string[],
   limits: Partial<SessionInventoryLimits>,
   platform: NodeJS.Platform,
-  queryPlans: Readonly<Record<string, AgentMetadataLocalQueryPlan>>
+  queryPlans: Readonly<Record<string, AgentMetadataLocalQueryPlan>>,
+  shouldDescendDirectory?: SessionInventoryDirectoryFilter
 ) {
   const watchers = new Set<FSWatcher>();
   let resyncTimer: ReturnType<typeof setInterval> | undefined;
@@ -295,7 +304,9 @@ function createInventoryResource(
 
   return {
     async inventory(): Promise<SessionInventory> {
-      return collectSessionInventory(roots, limits);
+      return collectSessionInventory(roots, limits, {
+        shouldDescendDirectory
+      });
     },
     async read(sourceId: string): Promise<AgentMetadataReadResult> {
       const request = decodeReadRequest(sourceId);

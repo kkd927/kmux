@@ -67,6 +67,38 @@ describe("session inventory cross-language contract", () => {
       expect(result.truncated).toBe(scenario.truncated);
     });
   }
+
+  it("skips pruned directories without counting them toward maxDirectories", () => {
+    const sandbox = mkdtempSync(join(tmpdir(), "kmux-inventory-prune-"));
+    const canonicalSandbox = realpathSync.native(sandbox);
+    sandboxes.push(canonicalSandbox);
+
+    for (let index = 0; index < 8; index += 1) {
+      const skippedDir = join(canonicalSandbox, "skipped", `step-${index}`);
+      mkdirSync(skippedDir, { recursive: true });
+      writeFileSync(join(skippedDir, "output.txt"), "ignored", "utf8");
+    }
+    const keptDir = join(canonicalSandbox, "kept", "logs");
+    mkdirSync(keptDir, { recursive: true });
+    writeFileSync(join(keptDir, "transcript.jsonl"), "{}\n", "utf8");
+
+    const result = collectSessionInventory(
+      [canonicalSandbox],
+      { maxDirectories: 4 },
+      {
+        shouldDescendDirectory: (relativeDirectoryPath) =>
+          !relativeDirectoryPath.startsWith("skipped")
+      }
+    );
+
+    expect(result.truncated).toBe(false);
+    expect(result.diagnostics).toEqual([]);
+    expect(
+      result.candidates.map((candidate) =>
+        relative(canonicalSandbox, candidate.path).replace(/\\/gu, "/")
+      )
+    ).toEqual(["kept/logs/transcript.jsonl"]);
+  });
 });
 
 function createScenario(scenario: ContractScenario): string {

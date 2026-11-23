@@ -20,7 +20,10 @@ import {
   createAntigravityExternalSessionProjection,
   createAntigravitySessionSourceProjection
 } from "./externalSessions";
-import { classifyAntigravityMetadataPath } from "./inventory";
+import {
+  classifyAntigravityMetadataPath,
+  shouldDescendAntigravityMetadataDirectory
+} from "./inventory";
 import { antigravitySessionIndexPath } from "./sessionIndex";
 import {
   antigravityUsageProjectionProbeRevision,
@@ -145,6 +148,7 @@ export const antigravityAgent = Object.freeze({
         execute: queryAntigravityConversationSteps
       }
     },
+    shouldDescendDirectory: shouldDescendAntigravityMetadataDirectory,
     resolveLocalRoots(options) {
       const storage =
         options.agentStorageRoots ??
@@ -221,6 +225,7 @@ export const antigravityAgent = Object.freeze({
         agentId: "antigravity",
         roots,
         topologyRoots,
+        shouldDescendDirectory: shouldDescendAntigravityMetadataDirectory,
         sourceProjection: createAntigravityUsageSourceProjection(),
         classifySource(candidate) {
           const role = classifyAntigravityMetadataPath(

@@ -57,6 +57,22 @@ type AntigravityQuotaSummaryPayload = {
   description?: string;
 };
 
+type AntigravityUserQuotaBucket = {
+  modelId?: string;
+  tokenType?: string;
+  remainingFraction?: number;
+  resetTime?: string;
+};
+
+type AntigravityUserQuotaPayload = {
+  buckets?: AntigravityUserQuotaBucket[];
+};
+
+type AntigravityQuotaFetchResult =
+  | { kind: "ok"; usage: SubscriptionProviderUsageVm }
+  | { kind: "auth_error" }
+  | { kind: "unavailable" };
+
 type CodeAssistTier = {
   id?: string;
   name?: string;
@@ -104,7 +120,9 @@ const ANTIGRAVITY_OAUTH_CLIENT_SECRET_ENV_KEYS = [
   "AGY_OAUTH_CLIENT_SECRET"
 ] as const;
 const GOOGLE_OAUTH_CLIENT_SECRET_LENGTH = 35;
-const ANTIGRAVITY_USER_AGENT = "antigravity";
+// Google's retrieveUserQuotaSummary endpoint filters out Gemini model groups
+// when User-Agent is bare "antigravity" or below its minimum client semver.
+const ANTIGRAVITY_USER_AGENT = "antigravity/10.0.0";
 const ANTIGRAVITY_CLIENT_METADATA_HEADER = "X-Goog-Ext-525006001-bin";
 export async function detectAntigravitySubscriptionAuth(
   options: AntigravitySubscriptionUsageOptions = {}
@@ -143,7 +161,7 @@ export async function fetchAntigravitySubscriptionUsage(
 
   const existingAccessToken = credentials?.access_token?.trim();
   if (existingAccessToken && !isCredentialsExpired(credentials, now())) {
-    const usage = await fetchAntigravityQuotaSummaryUsage({
+    const result = await fetchAntigravityQuotaSummaryUsage({
       endpointBaseUrl: "https://daily-cloudcode-pa.googleapis.com",
       accessToken: existingAccessToken,
       idToken: credentials?.id_token,
@@ -151,8 +169,11 @@ export async function fetchAntigravitySubscriptionUsage(
       now,
       platform
     });
-    if (usage) {
-      return usage;
+    if (result.kind === "ok") {
+      return result.usage;
+    }
+    if (result.kind === "unavailable") {
+      return null;
     }
   }
 
@@ -166,7 +187,7 @@ export async function fetchAntigravitySubscriptionUsage(
     });
     const accessToken = refreshed?.access_token?.trim();
     if (accessToken) {
-      const usage = await fetchAntigravityQuotaSummaryUsage({
+      const result = await fetchAntigravityQuotaSummaryUsage({
         endpointBaseUrl: "https://daily-cloudcode-pa.googleapis.com",
         accessToken,
         idToken: refreshed?.id_token,
@@ -174,8 +195,8 @@ export async function fetchAntigravitySubscriptionUsage(
         now,
         platform
       });
-      if (usage) {
-        return usage;
+      if (result.kind === "ok") {
+        return result.usage;
       }
     }
   }
@@ -190,7 +211,7 @@ async function fetchAntigravityQuotaSummaryUsage(options: {
   fetchImpl: FetchLike;
   now: () => number;
   platform: NodeJS.Platform;
-}): Promise<SubscriptionProviderUsageVm | null> {
+}): Promise<AntigravityQuotaFetchResult> {
   const headers = {
     Authorization: `Bearer ${options.accessToken}`,
     "Content-Type": "application/json",
@@ -212,8 +233,11 @@ async function fetchAntigravityQuotaSummaryUsage(options: {
       })
     })
   );
+  if (loadCodeAssistResponse.status === 401) {
+    return { kind: "auth_error" };
+  }
   if (!loadCodeAssistResponse.ok) {
-    return null;
+    return { kind: "unavailable" };
   }
   const loadCodeAssistPayload =
     (await loadCodeAssistResponse.json()) as CodeAssistLoadPayload;
@@ -230,31 +254,53 @@ async function fetchAntigravityQuotaSummaryUsage(options: {
         )
       : null);
   if (!planLabel) {
-    return null;
+    return { kind: "unavailable" };
   }
 
   const projectId = normalizeCodeAssistProjectId(
     loadCodeAssistPayload.cloudaicompanionProject
   );
+  const quotaBody = JSON.stringify(projectId ? { project: projectId } : {});
   const quotaResponse = await options.fetchImpl(
     `${options.endpointBaseUrl}/v1internal:retrieveUserQuotaSummary`,
     withFetchTimeout({
       method: "POST",
       headers,
-      body: JSON.stringify(projectId ? { project: projectId } : {})
+      body: quotaBody
     })
   );
-  if (!quotaResponse.ok) {
-    return null;
+  if (quotaResponse.status === 401) {
+    return { kind: "auth_error" };
   }
-  const quotaPayload =
-    (await quotaResponse.json()) as AntigravityQuotaSummaryPayload;
-  const rows = normalizeAntigravityQuotaSummaryRows(
-    quotaPayload,
-    options.now()
-  );
+  let rows: SubscriptionUsageRowVm[] = [];
+  let source: "quota_summary_api" | "quota_api" = "quota_summary_api";
+  if (quotaResponse.ok) {
+    const quotaPayload =
+      (await quotaResponse.json()) as AntigravityQuotaSummaryPayload;
+    rows = normalizeAntigravityQuotaSummaryRows(quotaPayload, options.now());
+  }
   if (rows.length === 0) {
-    return null;
+    const fallbackResponse = await options.fetchImpl(
+      `${options.endpointBaseUrl}/v1internal:retrieveUserQuota`,
+      withFetchTimeout({
+        method: "POST",
+        headers,
+        body: quotaBody
+      })
+    );
+    if (fallbackResponse.status === 401) {
+      return { kind: "auth_error" };
+    }
+    if (!fallbackResponse.ok) {
+      return { kind: "unavailable" };
+    }
+    const fallbackPayload =
+      (await fallbackResponse.json()) as AntigravityUserQuotaPayload;
+    rows = normalizeAntigravityUserQuotaRows(fallbackPayload, options.now());
+    source = "quota_api";
+  }
+  if (rows.length === 0) {
+    return { kind: "unavailable" };
   }
   const resolvedPlanLabel = shouldUseAntigravityBusinessPlanLabel(
     loadCodeAssistPayload.allowedTiers,
@@ -264,13 +310,16 @@ async function fetchAntigravityQuotaSummaryUsage(options: {
     : planLabel;
 
   return {
-    provider: "antigravity",
-    providerLabel: "Antigravity",
-    planLabel: resolvedPlanLabel,
-    accentTone: "emerald",
-    source: "quota_summary_api",
-    updatedAt: new Date(options.now()).toISOString(),
-    rows
+    kind: "ok",
+    usage: {
+      provider: "antigravity",
+      providerLabel: "Antigravity",
+      planLabel: resolvedPlanLabel,
+      accentTone: "emerald",
+      source,
+      updatedAt: new Date(options.now()).toISOString(),
+      rows
+    }
   };
 }
 
@@ -365,6 +414,87 @@ function normalizeAntigravityQuotaSummaryRows(
   }
 
   return rows;
+}
+
+function normalizeAntigravityUserQuotaRows(
+  payload: AntigravityUserQuotaPayload,
+  nowMs: number
+): SubscriptionUsageRowVm[] {
+  const candidates: Array<{
+    remainingFraction: number;
+    resetTimeMs?: number;
+  }> = [];
+
+  for (const bucket of payload.buckets ?? []) {
+    const modelId = asTrimmedString(bucket.modelId);
+    if (
+      !modelId ||
+      isAntigravityThirdPartyQuota(undefined, modelId) ||
+      !/^gemini(?:[-_.\s]|$)/iu.test(modelId)
+    ) {
+      continue;
+    }
+    const remainingFraction = bucket.remainingFraction;
+    if (
+      typeof remainingFraction !== "number" ||
+      !Number.isFinite(remainingFraction) ||
+      remainingFraction < 0 ||
+      remainingFraction > 1
+    ) {
+      continue;
+    }
+    const resetTimeMs = parseDateToMs(bucket.resetTime);
+    if (
+      remainingFraction === 0 &&
+      (typeof resetTimeMs !== "number" || resetTimeMs <= 0)
+    ) {
+      continue;
+    }
+    candidates.push({
+      remainingFraction,
+      ...(typeof resetTimeMs === "number" ? { resetTimeMs } : {})
+    });
+  }
+
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  if (
+    candidates.every(
+      (candidate) =>
+        candidate.remainingFraction === 1 && candidate.resetTimeMs === undefined
+    )
+  ) {
+    return [buildAntigravityUnlimitedQuotaRow()];
+  }
+
+  const timedCandidates = candidates.filter(
+    (candidate) => candidate.resetTimeMs !== undefined
+  );
+  const pool = timedCandidates.length > 0 ? timedCandidates : candidates;
+  let selected = pool[0]!;
+  for (const candidate of pool.slice(1)) {
+    if (
+      candidate.remainingFraction < selected.remainingFraction ||
+      (candidate.remainingFraction === selected.remainingFraction &&
+        (candidate.resetTimeMs ?? Number.POSITIVE_INFINITY) <
+          (selected.resetTimeMs ?? Number.POSITIVE_INFINITY))
+    ) {
+      selected = candidate;
+    }
+  }
+
+  return [
+    buildSubscriptionRow({
+      key: "gemini-5h",
+      label: "Session",
+      usedPercent: (1 - selected.remainingFraction) * 100,
+      resetsAtMs: selected.resetTimeMs,
+      windowKind: "session",
+      nowMs
+    })
+  ];
 }
 
 function compareQuotaSummaryBuckets(

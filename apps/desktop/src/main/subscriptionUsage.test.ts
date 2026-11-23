@@ -1328,7 +1328,7 @@ describe("subscription usage fetchers", () => {
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
-          "User-Agent": "antigravity",
+          "User-Agent": expect.stringMatching(/^antigravity\/\d+\.\d+\.\d+$/u),
           "X-Goog-Ext-525006001-bin": expect.any(String)
         }),
         body: JSON.stringify({ project: "projects/agy-project" })
@@ -1521,7 +1521,7 @@ describe("subscription usage fetchers", () => {
     expect(JSON.parse(String(quotaRequest?.body))).toEqual({});
     expect(quotaRequest?.headers).toEqual(
       expect.objectContaining({
-        "User-Agent": "antigravity",
+        "User-Agent": expect.stringMatching(/^antigravity\/\d+\.\d+\.\d+$/u),
         "X-Goog-Ext-525006001-bin": expect.any(String)
       })
     );
@@ -2256,6 +2256,298 @@ describe("subscription usage fetchers", () => {
       })
     ).resolves.toBe(true);
     expect(execFileImpl).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to retrieveUserQuota for Gemini session quota when retrieveUserQuotaSummary only returns 3P buckets", async () => {
+    const homeDir = createSandboxHome();
+    const encodedCredentials = Buffer.from(
+      JSON.stringify({
+        token: {
+          access_token: "agy-access-token",
+          refresh_token: "agy-refresh-token",
+          token_type: "Bearer",
+          expiry: "2026-04-19T00:00:00.000Z"
+        },
+        auth_method: "consumer"
+      })
+    ).toString("base64");
+    const execFileImpl = vi.fn(async () => ({
+      stdout: `go-keyring-base64:${encodedCredentials}\n`,
+      stderr: ""
+    }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            currentTier: { id: "free-tier" },
+            paidTier: { id: "g1-pro-tier", name: "Google AI Pro" },
+            cloudaicompanionProject: "aicode-consumers"
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            groups: [
+              {
+                displayName: "Claude and GPT models",
+                buckets: [
+                  {
+                    bucketId: "3p-weekly",
+                    window: "weekly",
+                    remainingFraction: 1,
+                    resetTime: "2026-04-25T00:00:00.000Z"
+                  },
+                  {
+                    bucketId: "3p-5h",
+                    window: "5h",
+                    remainingFraction: 1,
+                    resetTime: "2026-04-18T05:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            buckets: [
+              {
+                modelId: "claude-opus-5-5-high",
+                remainingFraction: 0.2,
+                resetTime: "2026-04-18T05:00:00.000Z"
+              },
+              {
+                modelId: "gpt-oss-120b-medium",
+                remainingFraction: 0.1,
+                resetTime: "2026-04-18T05:00:00.000Z"
+              },
+              {
+                modelId: "tab_flash_lite_preview",
+                remainingFraction: 1
+              },
+              {
+                modelId: "gemini-2.5-pro",
+                remainingFraction: 0.933,
+                resetTime: "2026-04-18T05:00:00.000Z"
+              },
+              {
+                modelId: "gemini-3-flash",
+                remainingFraction: 0.933,
+                resetTime: "2026-04-18T05:00:00.000Z"
+              },
+              {
+                modelId: "gemini-unconfigured-placeholder",
+                remainingFraction: 0
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchAntigravitySubscriptionUsage({
+      homeDir,
+      platform: "darwin",
+      execFileImpl,
+      fetchImpl,
+      googleOAuthClientConfig: { clientId: "agy-client-id" },
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "antigravity",
+        providerLabel: "Antigravity",
+        planLabel: "Google AI Pro",
+        source: "quota_api",
+        rows: [
+          expect.objectContaining({
+            key: "gemini-5h",
+            label: "Session",
+            usedPercent: 7,
+            windowKind: "session",
+            resetsAt: "2026-04-18T05:00:00.000Z"
+          })
+        ]
+      })
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ project: "aicode-consumers" })
+      })
+    );
+  });
+
+  it("does not refresh Antigravity OAuth tokens when 200 OK quota responses only contain filtered 3P buckets", async () => {
+    const homeDir = createSandboxHome();
+    const encodedCredentials = Buffer.from(
+      JSON.stringify({
+        token: {
+          access_token: "agy-access-token",
+          refresh_token: "agy-refresh-token",
+          token_type: "Bearer",
+          expiry: "2026-04-19T00:00:00.000Z"
+        },
+        auth_method: "consumer"
+      })
+    ).toString("base64");
+    const execFileImpl = vi.fn(async () => ({
+      stdout: `go-keyring-base64:${encodedCredentials}\n`,
+      stderr: ""
+    }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            currentTier: { id: "free-tier" },
+            paidTier: { id: "g1-pro-tier", name: "Google AI Pro" },
+            cloudaicompanionProject: "aicode-consumers"
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            groups: [
+              {
+                displayName: "Claude and GPT models",
+                buckets: [
+                  {
+                    bucketId: "3p-5h",
+                    window: "5h",
+                    remainingFraction: 1,
+                    resetTime: "2026-04-18T05:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            buckets: [
+              {
+                modelId: "claude-opus-5-5-high",
+                remainingFraction: 1,
+                resetTime: "2026-04-18T05:00:00.000Z"
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchAntigravitySubscriptionUsage({
+      homeDir,
+      platform: "darwin",
+      execFileImpl,
+      fetchImpl,
+      googleOAuthClientConfig: { clientId: "agy-client-id" },
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("refreshes Antigravity OAuth tokens when a non-expired access token receives 401", async () => {
+    const homeDir = createSandboxHome();
+    const encodedCredentials = Buffer.from(
+      JSON.stringify({
+        token: {
+          access_token: "revoked-access-token",
+          refresh_token: "agy-refresh-token",
+          token_type: "Bearer",
+          expiry: "2026-04-19T00:00:00.000Z"
+        },
+        auth_method: "consumer"
+      })
+    ).toString("base64");
+    const execFileImpl = vi.fn(async () => ({
+      stdout: `go-keyring-base64:${encodedCredentials}\n`,
+      stderr: ""
+    }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("unauthorized", { status: 401 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: "fresh-access-token",
+            expires_in: 3600
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            currentTier: { id: "standard-tier" },
+            cloudaicompanionProject: "aicode-consumers"
+          }),
+          { status: 200 }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            groups: [
+              {
+                displayName: "Gemini Models",
+                buckets: [
+                  {
+                    bucketId: "gemini-5h",
+                    window: "5h",
+                    remainingFraction: 0.75,
+                    resetTime: "2026-04-18T05:00:00.000Z"
+                  }
+                ]
+              }
+            ]
+          }),
+          { status: 200 }
+        )
+      );
+
+    const usage = await fetchAntigravitySubscriptionUsage({
+      homeDir,
+      platform: "darwin",
+      execFileImpl,
+      fetchImpl,
+      googleOAuthClientConfig: { clientId: "agy-client-id" },
+      now: () => new Date("2026-04-18T00:00:00.000Z").getTime()
+    });
+
+    expect(usage).toEqual(
+      expect.objectContaining({
+        provider: "antigravity",
+        planLabel: "Paid",
+        source: "quota_summary_api",
+        rows: [
+          expect.objectContaining({
+            key: "gemini-5h",
+            usedPercent: 25,
+            windowKind: "session"
+          })
+        ]
+      })
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 });
 
