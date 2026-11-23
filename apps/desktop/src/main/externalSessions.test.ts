@@ -81,6 +81,7 @@ function createTestExternalSessionIndexer(
   return createBuiltinLocalExternalSessionIndexer({
     ...options,
     metadataInventory,
+    commandAvailability: options.commandAvailability ?? (() => true),
     antigravitySessionIndexPath:
       options.antigravitySessionIndexPath ??
       join(options.homeDir, ".config", "kmux", "antigravity-sessions.json")
