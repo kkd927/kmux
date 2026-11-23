@@ -96,10 +96,6 @@ vi.mock("@xterm/addon-unicode11", () => ({
   Unicode11Addon: vi.fn(() => ({}))
 }));
 
-vi.mock("@xterm/addon-web-links", () => ({
-  WebLinksAddon: vi.fn(() => ({}))
-}));
-
 vi.mock("@xterm/xterm", () => ({
   Terminal: vi.fn().mockImplementation(() => {
     const onDataListeners = new Set<(data: string) => void>();

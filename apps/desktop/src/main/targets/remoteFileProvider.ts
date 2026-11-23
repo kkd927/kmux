@@ -110,11 +110,15 @@ export function createRemoteFileProviders(
           cwd,
           options.remoteHomeDir
         );
-        if (
-          resolved &&
-          (await options.host.fileExists(options.targetId, resolved))
-        ) {
-          return { path: decode(resolved), displayPath: resolved };
+        if (!resolved) {
+          continue;
+        }
+        const metadata = await options.host.statFile(
+          options.targetId,
+          resolved
+        );
+        if (metadata?.kind === "file") {
+          return { path: decode(resolved), displayPath: resolved, metadata };
         }
       }
       return null;

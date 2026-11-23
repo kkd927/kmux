@@ -1,5 +1,4 @@
 import type {
-  IBufferLine,
   IDisposable,
   ILink,
   ILinkDecorations,
@@ -13,8 +12,11 @@ import type {
 } from "@kmux/proto";
 
 import type { KeyboardShortcutPlatform } from "../../shared/platform/keyboardPolicy";
+import {
+  getTerminalWrappedLineWindow,
+  type TerminalWrappedLineWindow
+} from "./terminalWrappedLines";
 
-const WRAPPED_LINE_SCAN_LIMIT = 2048;
 const URL_LIKE_PROTOCOL_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
 const LINK_WITH_SUFFIX_PATH_CHARACTERS =
   /(?<path>(?:file:\/\/\/)?[^\s|<>[({][^\s|<>]*)$/;
@@ -238,19 +240,18 @@ export function registerTerminalFileLinkProvider({
 
   const linkRegistration = terminal.registerLinkProvider({
     provideLinks(bufferLineNumber, callback) {
-      const [lines, startLineIndex] = getWindowedLineStrings(
+      const wrappedWindow = getTerminalWrappedLineWindow(
         bufferLineNumber - 1,
-        terminal
+        terminal,
+        { mode: "file" }
       );
-      if (lines.length === 0) {
+      if (!wrappedWindow || wrappedWindow.text.length === 0) {
         callback(undefined);
         return;
       }
 
-      const text = lines.join("");
       void provideValidatedTerminalFileLinks({
-        text,
-        startLineIndex,
+        wrappedWindow,
         terminal,
         surfaceId,
         openFilePath,
@@ -287,8 +288,7 @@ export function registerTerminalFileLinkProvider({
 }
 
 async function provideValidatedTerminalFileLinks({
-  text,
-  startLineIndex,
+  wrappedWindow,
   terminal,
   surfaceId,
   openFilePath,
@@ -299,8 +299,7 @@ async function provideValidatedTerminalFileLinks({
   activeDecorations,
   updateModifierFromEvent
 }: {
-  text: string;
-  startLineIndex: number;
+  wrappedWindow: TerminalWrappedLineWindow;
   terminal: Terminal;
   surfaceId: string;
   openFilePath: (
@@ -320,42 +319,50 @@ async function provideValidatedTerminalFileLinks({
     event: Pick<MouseEvent | KeyboardEvent, "altKey" | "ctrlKey" | "metaKey">
   ) => void;
 }): Promise<ILink[]> {
-  const primaryCandidates = toResolveCandidates({
-    candidates: parseTerminalFilePathCandidates(text),
-    idPrefix: "primary",
-    startLineIndex,
-    terminal,
-    getCwdForBufferLine
-  });
+  const primaryCandidates = collectPrimaryCandidatesForWindow(
+    wrappedWindow,
+    terminal
+  );
   let resolved = await resolveTerminalFileLinksSafely(
     resolveFileLinks,
     surfaceId,
-    primaryCandidates
+    toResolveCandidates({
+      candidates: primaryCandidates,
+      idPrefix: "primary",
+      wrappedWindow,
+      getCwdForBufferLine
+    })
   );
 
   if (resolved.links.length === 0) {
-    const fallbackCandidates = toResolveCandidates({
-      candidates: parseTerminalFilePathFallbackCandidates(text),
-      idPrefix: "fallback",
-      startLineIndex,
-      terminal,
-      getCwdForBufferLine
-    });
+    const fallbackCandidates = parseTerminalFilePathFallbackCandidates(
+      wrappedWindow.text
+    ).filter((candidate) =>
+      wrappedWindow.intersectsLine(
+        candidate.startIndex,
+        candidate.endIndex,
+        wrappedWindow.anchorLineIndex
+      )
+    );
     if (fallbackCandidates.length > 0) {
       resolved = await resolveTerminalFileLinksSafely(
         resolveFileLinks,
         surfaceId,
-        fallbackCandidates
+        toResolveCandidates({
+          candidates: fallbackCandidates,
+          idPrefix: "fallback",
+          wrappedWindow,
+          getCwdForBufferLine
+        })
       );
     }
   }
 
-  return resolved.links
+  return selectNonOverlappingResolvedLinks(resolved.links, wrappedWindow)
     .map((candidate) =>
       createTerminalFileLink({
         candidate,
-        startLineIndex,
-        terminal,
+        wrappedWindow,
         surfaceId,
         openFilePath,
         activateFileLink,
@@ -367,28 +374,154 @@ async function provideValidatedTerminalFileLinks({
     .filter((link): link is ILink => link !== null);
 }
 
+function collectPrimaryCandidatesForWindow(
+  wrappedWindow: TerminalWrappedLineWindow,
+  terminal: Terminal
+): TerminalFilePathCandidate[] {
+  const joinedCandidates = parseTerminalFilePathCandidates(
+    wrappedWindow.text
+  ).filter((candidate) =>
+    wrappedWindow.intersectsLine(
+      candidate.startIndex,
+      candidate.endIndex,
+      wrappedWindow.anchorLineIndex
+    )
+  );
+  if (!wrappedWindow.hasHardWrapJoin) {
+    return joinedCandidates;
+  }
+
+  const crossingCandidates = joinedCandidates.filter((candidate) =>
+    wrappedWindow.crossesHardWrap(candidate.startIndex, candidate.endIndex)
+  );
+  if (crossingCandidates.length === 0) {
+    return joinedCandidates;
+  }
+
+  // If a hard-wrap join turns out not to exist on disk (e.g. two adjacent
+  // lines touching the right margin), include soft-wrap-only anchor candidates
+  // in the same single IPC batch so fallback succeeds without a second roundtrip.
+  const softWindow = getTerminalWrappedLineWindow(
+    wrappedWindow.anchorLineIndex,
+    terminal,
+    { mode: "file", allowHardWrap: false }
+  );
+  if (!softWindow || softWindow.text.length === 0) {
+    return joinedCandidates;
+  }
+
+  const segmentOffsetsByLine = new Map<number, number>();
+  for (const segment of wrappedWindow.segments) {
+    segmentOffsetsByLine.set(segment.lineIndex, segment.textStart);
+  }
+  const softStartOffset = segmentOffsetsByLine.get(softWindow.startLineIndex);
+  if (softStartOffset === undefined) {
+    return joinedCandidates;
+  }
+
+  const combined = [...joinedCandidates];
+  const seen = new Set(
+    joinedCandidates.map(
+      (candidate) =>
+        `${candidate.startIndex}:${candidate.endIndex}:${candidate.rawPath}`
+    )
+  );
+  for (const softCandidate of parseTerminalFilePathCandidates(softWindow.text)) {
+    if (
+      !softWindow.intersectsLine(
+        softCandidate.startIndex,
+        softCandidate.endIndex,
+        softWindow.anchorLineIndex
+      )
+    ) {
+      continue;
+    }
+    const mappedStart = softStartOffset + softCandidate.startIndex;
+    const mappedEnd = softStartOffset + softCandidate.endIndex;
+    if (mappedEnd > wrappedWindow.text.length) {
+      continue;
+    }
+    const overlapsCrossing = crossingCandidates.some(
+      (crossing) =>
+        mappedStart < crossing.endIndex && mappedEnd > crossing.startIndex
+    );
+    if (!overlapsCrossing) {
+      continue;
+    }
+    const key = `${mappedStart}:${mappedEnd}:${softCandidate.rawPath}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    combined.push({
+      ...softCandidate,
+      startIndex: mappedStart,
+      endIndex: mappedEnd
+    });
+  }
+  return combined;
+}
+
+function selectNonOverlappingResolvedLinks(
+  links: TerminalFileLinkResolved[],
+  wrappedWindow: TerminalWrappedLineWindow
+): TerminalFileLinkResolved[] {
+  if (links.length <= 1) {
+    return links;
+  }
+
+  const ranked = [...links].sort((left, right) => {
+    const leftCrosses = wrappedWindow.crossesHardWrap(
+      left.startIndex,
+      left.endIndex
+    );
+    const rightCrosses = wrappedWindow.crossesHardWrap(
+      right.startIndex,
+      right.endIndex
+    );
+    if (leftCrosses !== rightCrosses) {
+      return leftCrosses ? -1 : 1;
+    }
+    const lengthDiff =
+      right.endIndex - right.startIndex - (left.endIndex - left.startIndex);
+    if (lengthDiff !== 0) {
+      return lengthDiff;
+    }
+    return left.startIndex - right.startIndex;
+  });
+
+  const selected: TerminalFileLinkResolved[] = [];
+  for (const link of ranked) {
+    const overlaps = selected.some(
+      (existing) =>
+        link.startIndex < existing.endIndex &&
+        link.endIndex > existing.startIndex
+    );
+    if (!overlaps) {
+      selected.push(link);
+    }
+  }
+
+  return selected.sort((left, right) => left.startIndex - right.startIndex);
+}
+
 function toResolveCandidates({
   candidates,
   idPrefix,
-  startLineIndex,
-  terminal,
+  wrappedWindow,
   getCwdForBufferLine
 }: {
   candidates: TerminalFilePathCandidate[];
   idPrefix: string;
-  startLineIndex: number;
-  terminal: Terminal;
+  wrappedWindow: TerminalWrappedLineWindow;
   getCwdForBufferLine?: (bufferLineNumber: number) => string | undefined;
 }): TerminalFileLinkResolveCandidate[] {
   return candidates.map((candidate, index) => {
-    const [startLine] = mapStringIndex(
-      terminal,
-      startLineIndex,
-      0,
-      candidate.startIndex
-    );
+    const startPosition = wrappedWindow.locateOffset(candidate.startIndex);
     const baseCwd =
-      startLine >= 0 ? getCwdForBufferLine?.(startLine) : undefined;
+      startPosition !== null
+        ? getCwdForBufferLine?.(startPosition.lineIndex)
+        : undefined;
     return {
       id: `${idPrefix}-${index}`,
       rawPath: candidate.rawPath,
@@ -421,8 +554,7 @@ async function resolveTerminalFileLinksSafely(
 
 function createTerminalFileLink({
   candidate,
-  startLineIndex,
-  terminal,
+  wrappedWindow,
   surfaceId,
   openFilePath,
   activateFileLink,
@@ -431,8 +563,7 @@ function createTerminalFileLink({
   updateModifierFromEvent
 }: {
   candidate: TerminalFileLinkResolved;
-  startLineIndex: number;
-  terminal: Terminal;
+  wrappedWindow: TerminalWrappedLineWindow;
   surfaceId: string;
   openFilePath: (
     surfaceId: string,
@@ -446,31 +577,13 @@ function createTerminalFileLink({
     event: Pick<MouseEvent | KeyboardEvent, "altKey" | "ctrlKey" | "metaKey">
   ) => void;
 }): ILink | null {
-  const [startLine, startColumn] = mapStringIndex(
-    terminal,
-    startLineIndex,
-    0,
-    candidate.startIndex
+  const range = wrappedWindow.mapRange(
+    candidate.startIndex,
+    candidate.endIndex
   );
-  const [endLine, endColumn] = mapStringIndex(
-    terminal,
-    startLine,
-    startColumn,
-    candidate.endIndex - candidate.startIndex
-  );
-  if (
-    startLine === -1 ||
-    startColumn === -1 ||
-    endLine === -1 ||
-    endColumn === -1
-  ) {
+  if (!range) {
     return null;
   }
-
-  const range = {
-    start: { x: startColumn + 1, y: startLine + 1 },
-    end: { x: endColumn, y: endLine + 1 }
-  };
   const activateLink = (): void => {
     const activation =
       candidate.activation === "markdown-preview"
@@ -912,98 +1025,4 @@ function detectPathsNoSuffix(line: string): ParsedTerminalLink[] {
   }
 
   return results;
-}
-
-function getWindowedLineStrings(
-  lineIndex: number,
-  terminal: Terminal
-): [string[], number] {
-  let line: IBufferLine | undefined;
-  let topIndex = lineIndex;
-  let bottomIndex = lineIndex;
-  let length = 0;
-  let content = "";
-  const lines: string[] = [];
-
-  line = terminal.buffer.active.getLine(lineIndex);
-  if (!line) {
-    return [lines, topIndex];
-  }
-
-  const currentContent = line.translateToString(true);
-  if (line.isWrapped && currentContent[0] !== " ") {
-    while (
-      (line = terminal.buffer.active.getLine(--topIndex)) &&
-      length < WRAPPED_LINE_SCAN_LIMIT
-    ) {
-      content = line.translateToString(true);
-      length += content.length;
-      lines.push(content);
-      if (!line.isWrapped || content.includes(" ")) {
-        break;
-      }
-    }
-    lines.reverse();
-  }
-
-  lines.push(currentContent);
-
-  length = 0;
-  while (
-    (line = terminal.buffer.active.getLine(++bottomIndex)) &&
-    line.isWrapped &&
-    length < WRAPPED_LINE_SCAN_LIMIT
-  ) {
-    content = line.translateToString(true);
-    length += content.length;
-    lines.push(content);
-    if (content.includes(" ")) {
-      break;
-    }
-  }
-
-  return [lines, topIndex];
-}
-
-function mapStringIndex(
-  terminal: Terminal,
-  lineIndex: number,
-  rowIndex: number,
-  stringIndex: number
-): [number, number] {
-  const buffer = terminal.buffer.active;
-  const cell = buffer.getNullCell();
-  let start = rowIndex;
-
-  while (stringIndex) {
-    const line = buffer.getLine(lineIndex);
-    if (!line) {
-      return [-1, -1];
-    }
-
-    for (let i = start; i < line.length; i += 1) {
-      line.getCell(i, cell);
-      const chars = cell.getChars();
-      const width = cell.getWidth();
-      if (width) {
-        stringIndex -= chars.length || 1;
-        if (i === line.length - 1 && chars === "") {
-          const nextLine = buffer.getLine(lineIndex + 1);
-          if (nextLine?.isWrapped) {
-            nextLine.getCell(0, cell);
-            if (cell.getWidth() === 2) {
-              stringIndex += 1;
-            }
-          }
-        }
-      }
-      if (stringIndex < 0) {
-        return [lineIndex, i];
-      }
-    }
-    lineIndex += 1;
-    start = 0;
-  }
-
-  return [lineIndex, start];
 }

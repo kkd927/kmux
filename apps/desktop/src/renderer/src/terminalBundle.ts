@@ -1,7 +1,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { WebLinksAddon } from "@xterm/addon-web-links";
 import type { IDisposable, Terminal } from "@xterm/xterm";
 import type { TerminalInputDiagnosticKind, Uint64 } from "@kmux/proto";
 
@@ -10,6 +9,8 @@ import {
   type TerminalLineCwdTracker
 } from "./terminalLineCwdTracker";
 import { SupervisorTerminalQueryAuthorityAddon } from "./supervisorTerminalQueryAuthority";
+import { MultilineOscLinksAddon } from "./terminalOscLinks";
+import { TerminalWebLinksAddon } from "./terminalWebLinks";
 import { xtermCompositionTransactions } from "./xtermCompositionTransactions";
 
 export interface TerminalDiagnosticMetadata {
@@ -89,7 +90,7 @@ export interface TerminalBundle {
   fit: FitAddon;
   search: SearchAddon;
   unicode11: Unicode11Addon;
-  webLinks: WebLinksAddon;
+  webLinks: TerminalWebLinksAddon;
   fileLinks: IDisposable;
   lineCwdTrimListener: IDisposable;
   lineCwds: TerminalLineCwdTracker;
@@ -126,7 +127,7 @@ export function createTerminalBundle({
   const fit = new FitAddon();
   const search = new SearchAddon();
   const unicode11 = new Unicode11Addon();
-  const webLinks = new WebLinksAddon((_event, uri) => {
+  const webLinks = new TerminalWebLinksAddon((_event, uri) => {
     onWebLink(uri);
   });
   const lineCwds = createTerminalLineCwdTracker();
@@ -137,6 +138,7 @@ export function createTerminalBundle({
   terminal.loadAddon(fit);
   terminal.loadAddon(search);
   terminal.loadAddon(unicode11);
+  terminal.loadAddon(new MultilineOscLinksAddon());
   terminal.loadAddon(webLinks);
   const fileLinks = registerFileLinks(terminal, lineCwds);
   // Load last so these public parser handlers run before xterm's built-ins.

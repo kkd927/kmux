@@ -16,9 +16,6 @@ vi.mock("@xterm/addon-search", () => ({ SearchAddon: vi.fn(() => ({})) }));
 vi.mock("@xterm/addon-unicode11", () => ({
   Unicode11Addon: vi.fn(() => ({}))
 }));
-vi.mock("@xterm/addon-web-links", () => ({
-  WebLinksAddon: vi.fn(() => ({}))
-}));
 
 import {
   acquireSettlementPin,

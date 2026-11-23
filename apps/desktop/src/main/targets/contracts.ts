@@ -51,6 +51,7 @@ export type TargetMutationResult =
 export interface ResolvedFilePath<TPath extends LocalPath | RemotePath> {
   path: TPath;
   displayPath: string;
+  metadata?: FileMetadata;
 }
 
 export interface StagedLocalFile {
@@ -352,7 +353,11 @@ export interface LocatedTargetServiceSet {
     resolveTerminalPath(request: {
       cwd?: LocatedPath;
       rawPath: string;
-    }): Promise<{ path: LocatedPath; displayPath: string } | null>;
+    }): Promise<{
+      path: LocatedPath;
+      displayPath: string;
+      metadata?: FileMetadata;
+    } | null>;
     stageForLocalOpen(
       path: LocatedPath,
       options: { maxBytes: number }

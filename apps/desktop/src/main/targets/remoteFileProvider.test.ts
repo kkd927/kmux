@@ -148,11 +148,18 @@ describe("remote file providers", () => {
 
   it("resolves POSIX terminal paths remotely and never accepts another target's path", async () => {
     const transferRoot = await sandbox();
-    const fileExists = vi.fn(async (_targetId: string, path: string) =>
-      path.endsWith("/src/main.ts")
-    );
+    const statFile = vi.fn(async (_targetId: string, path: string) => {
+      if (path.endsWith("/src/main.ts")) {
+        return { kind: "file" as const, size: 128 };
+      }
+      if (path.endsWith("/src/dir")) {
+        return { kind: "directory" as const, size: 0 };
+      }
+      return null;
+    });
     const host = {
-      fileExists,
+      fileExists: vi.fn(),
+      statFile,
       downloadFile: vi.fn(),
       uploadFile: vi.fn(),
       releaseFile: vi.fn(),
@@ -160,6 +167,7 @@ describe("remote file providers", () => {
     } as unknown as Pick<
       RemoteHostManager,
       | "fileExists"
+      | "statFile"
       | "downloadFile"
       | "uploadFile"
       | "releaseFile"
@@ -172,11 +180,20 @@ describe("remote file providers", () => {
         cwd: remotePath("target_1", "/work/repo"),
         rawPath: "src/main.ts:42:3"
       })
-    ).resolves.toMatchObject({ displayPath: "/work/repo/src/main.ts" });
-    expect(fileExists).toHaveBeenLastCalledWith(
+    ).resolves.toMatchObject({
+      displayPath: "/work/repo/src/main.ts",
+      metadata: { kind: "file", size: 128 }
+    });
+    expect(statFile).toHaveBeenLastCalledWith(
       "target_1",
       "/work/repo/src/main.ts"
     );
+    await expect(
+      provider.files.resolveTerminalPath({
+        cwd: remotePath("target_1", "/work/repo"),
+        rawPath: "src/dir/"
+      })
+    ).resolves.toBeNull();
     await expect(
       provider.files.exists(remotePath("target_2", "/work/repo/src/main.ts"))
     ).rejects.toThrow(/target/u);

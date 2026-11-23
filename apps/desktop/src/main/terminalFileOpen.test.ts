@@ -370,6 +370,73 @@ describe("openTerminalFilePath", () => {
     expect(stat).toHaveBeenNthCalledWith(2, markdownPath);
   });
 
+  it("rejects directories and reuses metadata from resolveTerminalPath without a second stat", async () => {
+    const cwd = path.join(tempDir, "project");
+    mkdirSync(path.join(cwd, "shared/infra/http/npush"), { recursive: true });
+    writeTempFile("project/shared/infra/http/npush/NpushClient.java");
+
+    const localResult = resolveTerminalFileLinks({
+      surfaceId: "surface_1",
+      candidates: [
+        linkCandidate("dir", "shared/infra/http/npush/"),
+        linkCandidate("file", "shared/infra/http/npush/NpushClient.java")
+      ],
+      getState: () => stateWithSurface("surface_1", cwd)
+    });
+    expect(localResult.links.map((link) => link.id)).toEqual(["file"]);
+
+    const markdownPath = locatedPathForTarget(
+      { kind: "local" },
+      "/repo/docs/guide.md"
+    );
+    const dirPath = locatedPathForTarget({ kind: "local" }, "/repo/docs");
+    const stat = vi.fn();
+    const files = {
+      resolveTerminalPath: vi.fn(async ({ rawPath }: { rawPath: string }) =>
+        rawPath === "docs/"
+          ? {
+              path: dirPath,
+              displayPath: "/repo/docs",
+              metadata: { kind: "directory" as const, size: 0 }
+            }
+          : {
+              path: markdownPath,
+              displayPath: "/repo/docs/guide.md",
+              metadata: { kind: "file" as const, size: 128 }
+            }
+      ),
+      basename: vi.fn(
+        (candidate: typeof markdownPath) =>
+          encodeLocatedPathDto(candidate).path.split("/").at(-1)!
+      ),
+      display: vi.fn((candidate: typeof markdownPath) =>
+        encodeLocatedPathDto(candidate).path
+      ),
+      stat
+    } as unknown as LocatedTargetServiceSet["files"];
+    const targetServices = {
+      resolveLocated: () => ({ files }) as LocatedTargetServiceSet
+    } as unknown as TargetServiceRegistry;
+
+    const targetResult = await resolveTargetTerminalFileLinks({
+      surfaceId: "surface_1",
+      candidates: [
+        linkCandidate("dir", "docs/"),
+        linkCandidate("md", "docs/guide.md")
+      ],
+      getState: () => stateWithSurface("surface_1", "/repo"),
+      targetServices
+    });
+
+    expect(targetResult.links).toEqual([
+      expect.objectContaining({
+        id: "md",
+        activation: "markdown-preview"
+      })
+    ]);
+    expect(stat).not.toHaveBeenCalled();
+  });
+
   it("rejects a missing surface without opening anything", async () => {
     const filePath = writeTempFile("file.md");
 

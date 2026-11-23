@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -21,6 +21,7 @@ import type {
 } from "@kmux/proto";
 import type { LocalPathResolver } from "./targets/targetServiceRegistry";
 import type {
+  FileMetadata,
   LocatedTargetServiceSet,
   TargetServiceRegistry
 } from "./targets/contracts";
@@ -127,6 +128,16 @@ export async function resolveTargetTerminalFileLinks(options: {
   if (!context || !Array.isArray(options.candidates)) return { links: [] };
   const services = options.targetServices.resolveLocated(context.target);
   const links: TerminalFileLinkResolved[] = [];
+  const cache = new Map<
+    string,
+    {
+      openRawPath: string;
+      resolvedPath: string;
+      trimmedCharacterCount: number;
+      canPreview: boolean;
+    } | null
+  >();
+
   for (const candidate of options.candidates.slice(
     0,
     TERMINAL_FILE_LINK_MAX_CANDIDATES
@@ -137,34 +148,59 @@ export async function resolveTargetTerminalFileLinks(options: {
       candidate.baseCwd,
       context.cwd
     );
-    for (const variant of buildTerminalFileLinkValidationVariants(candidate)) {
-      const resolved = await services.files.resolveTerminalPath({
-        cwd,
-        rawPath: variant.openRawPath
-      });
-      if (!resolved) continue;
-      const trimmedCharacterCount =
-        candidate.rawPath.length - variant.openRawPath.length;
-      const canPreview = await canPreviewMarkdownFile({
-        files: services.files,
-        path: resolved.path
-      });
+    const cacheKey = terminalFileLinkValidationCacheKey(
+      candidate,
+      cwd === undefined
+        ? undefined
+        : typeof services.files.display === "function"
+          ? services.files.display(cwd)
+          : JSON.stringify(cwd)
+    );
+    let cached = cache.get(cacheKey);
+    if (cached === undefined) {
+      cached = null;
+      for (const variant of buildTerminalFileLinkValidationVariants(
+        candidate
+      )) {
+        const resolved = await services.files.resolveTerminalPath({
+          cwd,
+          rawPath: variant.openRawPath
+        });
+        if (!resolved) continue;
+        if (resolved.metadata && resolved.metadata.kind !== "file") continue;
+        const trimmedCharacterCount =
+          candidate.rawPath.length - variant.openRawPath.length;
+        const canPreview = await canPreviewMarkdownFile({
+          files: services.files,
+          path: resolved.path,
+          metadata: resolved.metadata
+        });
+        cached = {
+          openRawPath: variant.openRawPath,
+          resolvedPath: resolved.displayPath,
+          trimmedCharacterCount,
+          canPreview
+        };
+        break;
+      }
+      cache.set(cacheKey, cached);
+    }
+    if (cached) {
       links.push({
         id: candidate.id,
-        openRawPath: variant.openRawPath,
-        resolvedPath: resolved.displayPath,
+        openRawPath: cached.openRawPath,
+        resolvedPath: cached.resolvedPath,
         linkText: candidate.linkText.slice(
           0,
-          candidate.linkText.length - trimmedCharacterCount
+          candidate.linkText.length - cached.trimmedCharacterCount
         ),
         startIndex: candidate.startIndex,
-        endIndex: candidate.endIndex - trimmedCharacterCount,
+        endIndex: candidate.endIndex - cached.trimmedCharacterCount,
         ...(candidate.baseCwd === undefined
           ? {}
           : { baseCwd: candidate.baseCwd }),
-        ...(canPreview ? { activation: "markdown-preview" as const } : {})
+        ...(cached.canPreview ? { activation: "markdown-preview" as const } : {})
       });
-      break;
     }
   }
   return { links };
@@ -173,12 +209,14 @@ export async function resolveTargetTerminalFileLinks(options: {
 export async function canPreviewMarkdownFile(options: {
   path: LocatedPath;
   files: LocatedTargetServiceSet["files"];
+  metadata?: FileMetadata;
 }): Promise<boolean> {
   if (!isMarkdownFileName(options.files.basename(options.path))) {
     return false;
   }
   try {
-    const metadata = await options.files.stat(options.path);
+    const metadata =
+      options.metadata ?? (await options.files.stat(options.path));
     return Boolean(
       metadata?.kind === "file" && metadata.size <= MAX_MARKDOWN_BYTES
     );
@@ -197,7 +235,7 @@ export async function openTerminalFilePath({
   baseCwd,
   getState,
   openPath = (resolvedPath) => shell.openPath(resolvedPath),
-  fileExists = existsSync,
+  fileExists = isExistingRegularFile,
   homeDir = homedir(),
   resolveLocalPath
 }: OpenTerminalFilePathOptions): Promise<void> {
@@ -230,7 +268,7 @@ export function resolveTerminalFileLinks({
   surfaceId,
   candidates,
   getState,
-  fileExists = existsSync,
+  fileExists = isExistingRegularFile,
   homeDir = homedir(),
   resolveLocalPath
 }: ResolveTerminalFileLinksOptions): TerminalFileLinkResolveResult {
@@ -287,11 +325,41 @@ export function resolveTerminalFileLinks({
   return { links };
 }
 
+export function resolveTerminalFilePathCandidates({
+  rawPath,
+  cwd,
+  homeDir
+}: {
+  rawPath: string;
+  cwd?: string;
+  homeDir: string;
+}): string[] {
+  const text = rawPath.trim();
+  if (
+    !text ||
+    text.includes("\0") ||
+    URL_LIKE_PROTOCOL_RE.test(text) ||
+    KNOWN_PROTOCOL_RE.test(text)
+  ) {
+    return [];
+  }
+
+  const resolvedCandidates: string[] = [];
+  for (const candidate of buildRawPathOpenCandidates(text)) {
+    try {
+      resolvedCandidates.push(resolveSingleRawPath(candidate, cwd, homeDir));
+    } catch {
+      continue;
+    }
+  }
+  return resolvedCandidates;
+}
+
 export function resolveTerminalFilePath({
   rawPath,
   cwd,
   homeDir,
-  fileExists = existsSync
+  fileExists = isExistingRegularFile
 }: {
   rawPath: string;
   cwd?: string;
@@ -322,6 +390,14 @@ export function resolveTerminalFilePath({
   throw new Error(
     `Terminal file path does not exist: ${lastResolvedPath || text}`
   );
+}
+
+function isExistingRegularFile(candidatePath: string): boolean {
+  try {
+    return statSync(candidatePath).isFile();
+  } catch {
+    return false;
+  }
 }
 
 function resolveTerminalFileLinkTarget({

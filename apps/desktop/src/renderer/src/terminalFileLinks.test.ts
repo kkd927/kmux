@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 
+import { Terminal as HeadlessTerminal } from "@xterm/headless";
 import type {
   ILink,
   ILinkDecorations,
@@ -191,14 +192,162 @@ describe("terminal file link provider", () => {
     });
   });
 
-  it("sets an end-of-line link range using xterm right-side coordinates", async () => {
+  it("sets an end-of-line link range to the inclusive last cell column", async () => {
     const links = await provideFileLinksForText("src/App.tsx");
 
     expect(links?.[0]?.text).toBe("src/App.tsx");
     expect(links?.[0]?.range).toEqual({
       start: { x: 1, y: 1 },
-      end: { x: 0, y: 2 }
+      end: { x: "src/App.tsx".length, y: 1 }
     });
+  });
+
+  it("connects a TUI hard-wrapped file path across rows from both lines in one resolution batch", async () => {
+    const terminal = await createHeadlessTerminal(
+      114,
+      "또한 NPush의 100건 제한은 사용자 수가 아니라 device message 수 기준입니다. 한 사용자가 여러 단말을 가지면 100명 청\r\n" +
+        "크가 HTTP 요청 여러 건으로 나뉩니다. \x1b[36mshared/http-client/src/main/java/com/apollo/article/shared/infra/http/npush/\x1b[0m\r\n" +
+        "\x1b[36mNpushClient.java:25\x1b[0m\r\n"
+    );
+    const fullPath =
+      "shared/http-client/src/main/java/com/apollo/article/shared/infra/http/npush/NpushClient.java";
+    const resolveFileLinks = vi.fn(
+      async (
+        _surfaceId: string,
+        candidates: TerminalFileLinkResolveCandidate[]
+      ): Promise<TerminalFileLinkResolveResult> => ({
+        links: candidates
+          .filter((candidate) => candidate.rawPath === fullPath)
+          .map((candidate) => ({
+            id: candidate.id,
+            openRawPath: candidate.rawPath,
+            resolvedPath: `/repo/${candidate.rawPath}`,
+            linkText: candidate.linkText,
+            startIndex: candidate.startIndex,
+            endIndex: candidate.endIndex
+          }))
+      })
+    );
+
+    const providers: ILinkProvider[] = [];
+    terminal.registerLinkProvider = vi.fn((nextProvider: ILinkProvider) => {
+      providers.push(nextProvider);
+      return { dispose: vi.fn() };
+    });
+
+    const registration = registerTerminalFileLinkProvider({
+      terminal,
+      getKeyboardPlatform: () => "darwin",
+      surfaceId: "surface_1",
+      openFilePath: vi.fn(async () => {}),
+      resolveFileLinks
+    });
+
+    const expectedRange = {
+      start: { x: 38, y: 2 },
+      end: { x: 19, y: 3 }
+    };
+
+    const fromFirstLine = await provideLinksFromProvider(providers[0], 2);
+    expect(resolveFileLinks).toHaveBeenCalledTimes(1);
+    expect(fromFirstLine).toHaveLength(1);
+    expect(fromFirstLine?.[0]?.text).toBe(`${fullPath}:25`);
+    expect(fromFirstLine?.[0]?.range).toEqual(expectedRange);
+
+    const fromContinuationLine = await provideLinksFromProvider(
+      providers[0],
+      3
+    );
+    expect(resolveFileLinks).toHaveBeenCalledTimes(2);
+    expect(fromContinuationLine).toHaveLength(1);
+    expect(fromContinuationLine?.[0]?.text).toBe(`${fullPath}:25`);
+    expect(fromContinuationLine?.[0]?.range).toEqual(expectedRange);
+
+    registration.dispose();
+    terminal.dispose();
+  });
+
+  it("falls back to single-line file links in the same batch when a hard-wrap join does not exist", async () => {
+    const terminal = await createHeadlessTerminal(
+      40,
+      "Check src/very/long/directory/first-\r\nsecond/file.ts\r\n"
+    );
+    const resolveFileLinks = vi.fn(
+      async (
+        _surfaceId: string,
+        candidates: TerminalFileLinkResolveCandidate[]
+      ): Promise<TerminalFileLinkResolveResult> => ({
+        links: candidates
+          .filter(
+            (candidate) =>
+              candidate.rawPath === "src/very/long/directory/first-" ||
+              candidate.rawPath === "second/file.ts"
+          )
+          .map((candidate) => ({
+            id: candidate.id,
+            openRawPath: candidate.rawPath,
+            resolvedPath: `/repo/${candidate.rawPath}`,
+            linkText: candidate.linkText,
+            startIndex: candidate.startIndex,
+            endIndex: candidate.endIndex
+          }))
+      })
+    );
+
+    const providers: ILinkProvider[] = [];
+    terminal.registerLinkProvider = vi.fn((nextProvider: ILinkProvider) => {
+      providers.push(nextProvider);
+      return { dispose: vi.fn() };
+    });
+
+    const registration = registerTerminalFileLinkProvider({
+      terminal,
+      getKeyboardPlatform: () => "linux",
+      surfaceId: "surface_1",
+      openFilePath: vi.fn(async () => {}),
+      resolveFileLinks
+    });
+
+    const links = await provideLinksFromProvider(providers[0], 1);
+    expect(resolveFileLinks).toHaveBeenCalledTimes(1);
+    expect(links).toHaveLength(1);
+    expect(links?.[0]?.text).toBe("src/very/long/directory/first-");
+    expect(links?.[0]?.range).toEqual({
+      start: { x: 7, y: 1 },
+      end: { x: 36, y: 1 }
+    });
+
+    registration.dispose();
+    terminal.dispose();
+  });
+
+  it("does not join hard-wrapped lines with incompatible ANSI foreground styles", async () => {
+    const terminal = await createHeadlessTerminal(
+      40,
+      "See \x1b[36msrc/components/very/long/path/\x1b[0m\r\nApp.tsx\r\n"
+    );
+    const resolveFileLinks = vi.fn(resolveAllFileLinks);
+    const providers: ILinkProvider[] = [];
+    terminal.registerLinkProvider = vi.fn((nextProvider: ILinkProvider) => {
+      providers.push(nextProvider);
+      return { dispose: vi.fn() };
+    });
+
+    const registration = registerTerminalFileLinkProvider({
+      terminal,
+      getKeyboardPlatform: () => "linux",
+      surfaceId: "surface_1",
+      openFilePath: vi.fn(async () => {}),
+      resolveFileLinks
+    });
+
+    const links = await provideLinksFromProvider(providers[0], 1);
+    expect(links?.map((link) => link.text)).toEqual([
+      "src/components/very/long/path/"
+    ]);
+
+    registration.dispose();
+    terminal.dispose();
   });
 
   it("sets a wrapped link range without including the following wrapped-line cell", async () => {
@@ -825,4 +974,17 @@ function createFakeTerminalFromLines(
     },
     registerLinkProvider: vi.fn()
   } as unknown as Terminal;
+}
+
+async function createHeadlessTerminal(
+  cols: number,
+  data: string
+): Promise<Terminal> {
+  const terminal = new HeadlessTerminal({
+    cols,
+    rows: 12,
+    allowProposedApi: true
+  });
+  await new Promise<void>((resolve) => terminal.write(data, resolve));
+  return terminal as unknown as Terminal;
 }

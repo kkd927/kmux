@@ -25,7 +25,7 @@ import {
   type GitRepositoryMetadata
 } from "@kmux/metadata";
 
-import { resolveTerminalFilePath } from "../terminalFileOpen";
+import { resolveTerminalFilePathCandidates } from "../terminalFileOpen";
 import type {
   AttachmentProvider,
   FileProvider,
@@ -121,16 +121,19 @@ export function createLocalFileProvider(options: {
       return raw(value);
     },
     async resolveTerminalPath(request) {
-      try {
-        const resolved = resolveTerminalFilePath({
-          rawPath: request.rawPath,
-          ...(request.cwd === undefined ? {} : { cwd: raw(request.cwd) }),
-          homeDir: options.homeDir
-        });
-        return { path: decode(resolved), displayPath: resolved };
-      } catch {
-        return null;
+      const cwd = request.cwd === undefined ? undefined : raw(request.cwd);
+      for (const resolved of resolveTerminalFilePathCandidates({
+        rawPath: request.rawPath,
+        cwd,
+        homeDir: options.homeDir
+      })) {
+        const decoded = decode(resolved);
+        const metadata = await provider.stat(decoded);
+        if (metadata?.kind === "file") {
+          return { path: decoded, displayPath: resolved, metadata };
+        }
       }
+      return null;
     },
     async stageForLocalOpen(value, stageOptions) {
       assertTransferBound(stageOptions.maxBytes);
