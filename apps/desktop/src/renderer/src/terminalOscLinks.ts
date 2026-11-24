@@ -1,4 +1,5 @@
 import type {
+  IBufferCell,
   IBufferRange,
   ILink,
   ILinkHandler,
@@ -11,7 +12,7 @@ const MAX_OSC_LINK_SPAN_LINES = 16;
 const OSC_HARD_WRAP_RIGHT_MARGIN = 2;
 const OSC_HARD_WRAP_MARGIN_MIN_COLS = 20;
 
-interface XtermInternalCell {
+interface XtermInternalCell extends IBufferCell {
   hasExtendedAttrs(): boolean | number;
   extended: {
     urlId: number;
@@ -29,7 +30,6 @@ interface XtermInternalBuffer {
   lines: {
     get(index: number): XtermInternalBufferLine | undefined;
   };
-  getNullCell(): XtermInternalCell;
 }
 
 interface XtermInternalOscLinkService {
@@ -104,7 +104,6 @@ export function installMultilineOscLinkProvider(
     !original ||
     typeof original.provideLinks !== "function" ||
     !bufferService?.buffer?.lines?.get ||
-    typeof bufferService.buffer.getNullCell !== "function" ||
     !oscLinkService?.getLinkData
   ) {
     return () => {};
@@ -118,9 +117,13 @@ export function installMultilineOscLinkProvider(
           return;
         }
         try {
+          // The public API creates a scratch cell. The internal buffer's null
+          // cell is reused by xterm to fill erased rows and must stay blank.
+          const cell = terminal.buffer.active.getNullCell() as XtermInternalCell;
           const expanded = links.map((link) =>
             expandOscLinkAcrossWrappedRows(
               link,
+              cell,
               bufferService,
               oscLinkService,
               optionsService?.rawOptions?.linkHandler
@@ -145,6 +148,7 @@ export function installMultilineOscLinkProvider(
 
 function expandOscLinkAcrossWrappedRows(
   link: ILink,
+  cell: XtermInternalCell,
   bufferService: { buffer: XtermInternalBuffer; cols: number },
   oscLinkService: XtermInternalOscLinkService,
   linkHandler: ILinkHandler | undefined
@@ -156,7 +160,6 @@ function expandOscLinkAcrossWrappedRows(
     return link;
   }
 
-  const cell = buffer.getNullCell();
   const anchorStartCol = link.range.start.x - 1;
   const anchorUrlId = readUrlId(anchorLine, anchorStartCol, cell);
   if (anchorUrlId === 0) {

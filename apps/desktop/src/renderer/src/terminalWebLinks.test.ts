@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { Terminal as HeadlessTerminal } from "@xterm/headless";
-import type { ILink, ILinkProvider, Terminal } from "@xterm/xterm";
+import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
 
 import { installMultilineOscLinkProvider } from "./terminalOscLinks";
 import { computeTerminalWebLinks } from "./terminalWebLinks";
@@ -119,95 +119,46 @@ describe("terminal web links across wrapped lines", () => {
 });
 
 describe("multiline OSC 8 hyperlink expansion", () => {
+  function createOscTerminal(cols: number) {
+    const terminal = new Terminal({ cols, rows: 12, allowProposedApi: true });
+    const { _core } = terminal as Terminal & {
+      _core: { _linkProviderService: { linkProviders: ILinkProvider[] } };
+    };
+    const providers = _core._linkProviderService.linkProviders;
+    const original = providers[0];
+    const restore = installMultilineOscLinkProvider(terminal);
+    const getLinks = (row: number) =>
+      new Promise<ILink[] | undefined>((resolve) =>
+        providers[0].provideLinks(row, resolve)
+      );
+    const write = (data: string) =>
+      new Promise<void>((resolve) => terminal.write(data, resolve));
+    return { terminal, providers, original, restore, getLinks, write };
+  }
+
+  it("keeps erased cells blank after inspecting an OSC 8 link", async () => {
+    const { terminal, getLinks, write } = createOscTerminal(16);
+    try {
+      await write("x \x1b]8;;https://test\x07https://test\x1b]8;;\x07 !");
+      expect(await getLinks(1)).toHaveLength(1);
+      await write("\r\x1b[2K");
+      expect(terminal.buffer.active.getLine(0)?.translateToString(false)).toBe(
+        " ".repeat(16)
+      );
+    } finally {
+      terminal.dispose();
+    }
+  });
+
   it("expands soft-wrapped and hard-wrapped OSC 8 links without merging unrelated rows", async () => {
-    const terminal = (await createTerminal(
-      40,
+    const { terminal, providers, original, restore, getLinks, write } =
+      createOscTerminal(40);
+    await write(
       "See \x1b]8;;https://example.com/soft\x07https://example.com/very/long/wrapped/path\x1b]8;;\x07 end\r\n" +
         "Hard \x1b]8;;https://example.com/hard\x07https://example.com/a/\r\nb/c\x1b]8;;\x07\r\n" +
         "\x1b]8;;https://example.com/same\x07one\x1b]8;;\x07\r\n" +
         "\x1b]8;;https://example.com/same\x07two\x1b]8;;\x07\r\n"
-    )) as Terminal & {
-      _core: {
-        _bufferService: {
-          buffer: {
-            lines: {
-              get(index: number): {
-                getTrimmedLength(): number;
-                loadCell(
-                  index: number,
-                  cell: {
-                    hasExtendedAttrs(): boolean | number;
-                    extended: { urlId: number };
-                  }
-                ): void;
-              };
-            };
-            getNullCell(): {
-              hasExtendedAttrs(): boolean | number;
-              extended: { urlId: number };
-            };
-          };
-          cols: number;
-        };
-        _oscLinkService: {
-          getLinkData(linkId: number): { id?: string; uri: string } | undefined;
-        };
-        _linkProviderService?: { linkProviders: ILinkProvider[] };
-      };
-    };
-
-    const singleLineOscProvider: ILinkProvider = {
-      provideLinks(y, callback) {
-        const line = terminal._core._bufferService.buffer.lines.get(y - 1);
-        const cell = terminal._core._bufferService.buffer.getNullCell();
-        const trimmed = line.getTrimmedLength();
-        const links: ILink[] = [];
-        let start = -1;
-        let currentId = 0;
-        for (let x = 0; x < trimmed; x += 1) {
-          line.loadCell(x, cell);
-          const uid = cell.hasExtendedAttrs() ? cell.extended.urlId : 0;
-          if (uid !== currentId) {
-            if (currentId !== 0 && start !== -1) {
-              const uri = terminal._core._oscLinkService.getLinkData(currentId)
-                ?.uri;
-              if (uri) {
-                links.push({
-                  text: uri,
-                  range: { start: { x: start + 1, y }, end: { x, y } },
-                  activate: vi.fn()
-                });
-              }
-            }
-            currentId = uid;
-            start = uid !== 0 ? x : -1;
-          }
-        }
-        if (currentId !== 0 && start !== -1) {
-          const uri = terminal._core._oscLinkService.getLinkData(currentId)
-            ?.uri;
-          if (uri) {
-            links.push({
-              text: uri,
-              range: { start: { x: start + 1, y }, end: { x: trimmed, y } },
-              activate: vi.fn()
-            });
-          }
-        }
-        callback(links);
-      }
-    };
-
-    terminal._core._linkProviderService = {
-      linkProviders: [singleLineOscProvider]
-    };
-    const restore = installMultilineOscLinkProvider(terminal);
-    const provider = terminal._core._linkProviderService.linkProviders[0];
-
-    const getLinks = (row: number) =>
-      new Promise<ILink[] | undefined>((resolve) =>
-        provider.provideLinks(row, resolve)
-      );
+    );
 
     // Soft-wrapped OSC 8 spans row 1 (col 5..40) -> row 2 (col 1..6)
     expect(await getLinks(1)).toEqual([
@@ -252,9 +203,7 @@ describe("multiline OSC 8 hyperlink expansion", () => {
     ]);
 
     restore();
-    expect(terminal._core._linkProviderService.linkProviders[0]).toBe(
-      singleLineOscProvider
-    );
+    expect(providers[0]).toBe(original);
     terminal.dispose();
   });
 });
