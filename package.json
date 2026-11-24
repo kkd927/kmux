@@ -90,7 +90,7 @@
     "ajv": "^8.18.0",
     "electron": "43.1.1",
     "electron-builder": "26.15.3",
-    "electron-vite": "^3.1.0",
+    "electron-vite": "^6.0.0",
     "eslint": "^9.25.1",
     "eslint-config-prettier": "^10.1.2",
     "js-yaml": "^4.3.2",
@@ -98,8 +98,8 @@
     "mdast-util-from-markdown": "^2.0.3",
     "prettier": "^3.5.3",
     "testcontainers": "12.0.4",
-    "tsup": "^8.4.0",
-    "tsx": "^4.19.4",
+    "tsup": "^9.0.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.8.3",
     "vitest": "^3.2.6"
   }
